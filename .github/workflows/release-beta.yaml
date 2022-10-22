@@ -20,5 +20,5 @@ jobs:
       run: |
         git config --global user.email "ruimo.uno@gmail.com"
         git config --global user.name "Shisei Hanai"
-        git status
-        cargo release -vv beta --execute --no-confirm --token ${{ secrets.SERDO }}
+        cargo login ${{ secrets.SERDO }}
+        cargo release -vv beta --execute --no-confirm
