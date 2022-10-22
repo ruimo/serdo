@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Serializable do/undo library."
 license = "Apache-2.0"
+documentation = "https://github.com/ruimo/serdo"
+homepage = "https://github.com/ruimo/serdo"
+repository = "https://github.com/ruimo/serdo"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
