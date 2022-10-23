@@ -6,6 +6,8 @@ jobs:
   beta_release:
     runs-on: ubuntu-latest
     steps:
+    - name: update
+      run: rustup upgrade --force
     - uses: actions/checkout@v2
     - name: cargo plugin cache
       id: cargo-plugin-cache
