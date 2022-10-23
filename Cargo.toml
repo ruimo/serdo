@@ -1,6 +1,6 @@
 [package]
 name = "serdo"
-version = "0.1.1-beta.10"
+version = "0.1.1-beta.11"
 edition = "2021"
 description = "Serializable do/undo library."
 license = "Apache-2.0"
