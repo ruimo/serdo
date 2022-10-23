@@ -309,13 +309,6 @@ impl<C, M> SqliteUndoStore<C, M> where M: Default + Serialize + DeserializeOwned
         Ok(())
     }
 
-    #[inline]
-    fn rewind_undo_records(&mut self) -> Result<usize, rusqlite::Error> {
-        self.conn.execute(
-            "delete from command where ?1 < rowid", params![self.cur_cmd_seq_no]
-        )
-    }
-
     fn trim_undo_records(&self) -> Result<usize, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "delete from command as c0 where c0.rowid not in (
