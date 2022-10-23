@@ -6,10 +6,9 @@ jobs:
   beta_release:
     runs-on: ubuntu-latest
     steps:
-    - uses: AutoModality/action-clean@v1
-    - uses: actions/checkout@v2
     - name: Clean
-      run: rm -rf .rust .cargo
+      run: rm -rf ~/.cargo
+    - uses: actions/checkout@v2
     - name: cargo plugin cache
       id: cargo-plugin-cache
       uses: actions/cache@v2
