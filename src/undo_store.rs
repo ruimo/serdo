@@ -17,7 +17,7 @@ pub trait UndoStore {
 
 pub struct InMemoryUndoStore<C, M> where M: Default {
     model: M,
-    store: Vec<Box<C>>,
+    store: Vec<C>,
     location: usize,
 }
 
@@ -75,7 +75,7 @@ impl<C, M> UndoStore for InMemoryUndoStore<C, M>
             self.store.remove(0);
         }
     
-        self.store.push(Box::new(cmd));
+        self.store.push(cmd);
         self.location = self.store.len();
         resp
     }
@@ -461,7 +461,6 @@ impl<Command, M> UndoStore for SqliteUndoStore<Command, M>
 }
 #[cfg(test)]
 mod tests {
-    use serde::{Serialize, Deserialize};
     use tempfile::tempdir;
     use super::{Cmd, InMemoryUndoStore, UndoStore};
 
@@ -665,7 +664,7 @@ mod tests {
     }
 
     #[cfg(feature = "persistence")]
-    #[derive(Serialize, Deserialize)]
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct SerSum(i32);
 
     #[cfg(feature = "persistence")]
@@ -676,7 +675,7 @@ mod tests {
     }
 
     #[cfg(feature = "persistence")]
-    #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
     enum SerSumCmd {
         Add(i32), Sub(i32),
     }
