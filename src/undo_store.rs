@@ -53,7 +53,7 @@ impl<M> Cmd for InMemorySnapshotCmd<M> where M: Clone {
 */
 
 impl<C, M> UndoStore for InMemoryUndoStore<C, M>
-    where M: Clone + Default + 'static,
+    where M: Default + 'static,
     C: Cmd<Model = M>
 {
     type ModelType = M;
@@ -468,7 +468,7 @@ mod tests {
         Add(i32), Sub(i32),
     }
 
-    #[derive(PartialEq, Debug, Clone)]
+    #[derive(PartialEq, Debug)]
     struct Sum(i32);
 
     impl Default for Sum {
