@@ -1,15 +1,14 @@
-name: Release beta
+name: Release
 
 on: [ workflow_dispatch ]
 
 jobs:
-  beta_release:
+  release:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
       with:
         fetch-depth: 0
-    - uses: actions/checkout@v3
     - name: cargo plugin cache
       id: cargo-plugin-cache
       uses: actions/cache@v2
@@ -19,10 +18,10 @@ jobs:
     - name: install cargo plugin
       if: steps.cargo-plugin-cache.outputs.cache-hit != 'true'
       run: cargo install cargo-release
-    - name: Beta Release
+    - name: Release
       run: |
         git config --global user.email "ruimo.uno@gmail.com"
         git config --global user.name "Shisei Hanai"
         cargo login ${{ secrets.SERDO }}
         git status
-        cargo release -vv beta --execute --no-confirm --features persistence
+        cargo release -vv --execute --no-confirm --features persistence
