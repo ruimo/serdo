@@ -452,7 +452,7 @@ mod tests {
     use tempfile::tempdir;
     use crate::cmd::{Undo, Redo};
 
-    use super::{Cmd, InMemoryUndoStore, UndoStore, InMemoryStoreErr, SqliteUndoStoreError};
+    use super::{Cmd, InMemoryUndoStore, UndoStore, InMemoryStoreErr};
 
     enum SumCmd {
         Add(i32), Sub(i32),
@@ -735,12 +735,12 @@ mod tests {
     #[cfg(feature = "persistence")]
     impl SerModel for super::SqliteUndoStore::<SerSumCmd, SerSum> {
         fn add(&mut self, to_add: i32) -> Result<(), super::SqliteUndoStoreError> {
-            let _: Result<Result<(), ()>, SqliteUndoStoreError> = self.add_cmd(SerSumCmd::Add(to_add));
+            let _: Result<Result<(), ()>, super::SqliteUndoStoreError> = self.add_cmd(SerSumCmd::Add(to_add));
             Ok(())
         }
 
         fn sub(&mut self, to_sub: i32) -> Result<(), super::SqliteUndoStoreError> {
-            let _: Result<Result<(), ()>, SqliteUndoStoreError> = self.add_cmd(SerSumCmd::Sub(to_sub));
+            let _: Result<Result<(), ()>, super::SqliteUndoStoreError> = self.add_cmd(SerSumCmd::Sub(to_sub));
             Ok(())
         }
     }
