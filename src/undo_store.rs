@@ -1,18 +1,22 @@
-use crate::cmd::Cmd;
+use crate::cmd::{Cmd, Redo, Undo};
 
 pub trait UndoStore {
     type ModelType;
-    type CmdType;
-    type AddCmdRet;
-    type UndoErr;
-    type CanUndoRet;
+    type CmdType: Cmd<Model = Self::ModelType>;
+    type StoreErr;
 
     fn model(&self) -> &Self::ModelType;
-    fn add_cmd(&mut self, cmd: Self::CmdType) -> Self::AddCmdRet;
-    fn can_undo(&self) -> Self::CanUndoRet;
-    fn undo(&mut self) -> Self::UndoErr;
-    fn can_redo(&self) -> Self::CanUndoRet;
-    fn redo(&mut self) -> Self::UndoErr;
+    fn add_cmd<E, R: Redo<Self::ModelType, Self::CmdType, E>>(&mut self, cmd: Self::CmdType) -> Result<Result<R, E>, Self::StoreErr>;
+    fn can_undo(&self) -> Result<bool, Self::StoreErr>;
+    fn undo<E, U: Undo<Self::ModelType, Self::CmdType, E>>(&mut self) -> Result<Result<U, E>, Self::StoreErr>;
+    fn can_redo(&self) -> Result<bool, Self::StoreErr>;
+    fn redo<E, R: Redo<Self::ModelType, Self::CmdType, E>>(&mut self) -> Result<Result<R, E>, Self::StoreErr>;
+}
+
+#[derive(Debug)]
+pub enum InMemoryStoreErr {
+    // Undo/Redo
+    CannotUndoRedo,
 }
 
 pub struct InMemoryUndoStore<C, M> where M: Default {
@@ -57,18 +61,16 @@ impl<C, M> UndoStore for InMemoryUndoStore<C, M>
     C: Cmd<Model = M>
 {
     type ModelType = M;
-    type AddCmdRet = Result<C::RedoResp, C::RedoErr>;
     type CmdType = C;
-    type UndoErr = ();
-    type CanUndoRet = bool;
+    type StoreErr = InMemoryStoreErr;
 
-    fn add_cmd(&mut self, mut cmd: Self::CmdType) -> Self::AddCmdRet {
+    fn add_cmd<E, R: Redo<Self::ModelType, Self::CmdType, E>>(&mut self, mut cmd: Self::CmdType) -> Result<Result<R, E>, Self::StoreErr> {
         if self.location < self.store.len() {
             self.store.truncate(self.location);
         }
-        let resp: Self::AddCmdRet = cmd.redo(&mut self.model);
+        let resp: Result<R, E> = cmd.redo(&mut self.model);
         if resp.is_err() {
-            return resp;
+            return Ok(resp);
         }
 
         while self.store.capacity() <= self.store.len() {
@@ -77,33 +79,38 @@ impl<C, M> UndoStore for InMemoryUndoStore<C, M>
     
         self.store.push(cmd);
         self.location = self.store.len();
-        resp
+        Ok(resp)
     }
 
     #[inline]
-    fn can_undo(&self) -> bool {
-        0 < self.location
+    fn can_undo(&self) -> Result<bool, Self::StoreErr> {
+        Ok(0 < self.location)
     }
 
-    fn undo(&mut self) {
-        if self.can_undo() {
+    fn undo<E, U: Undo<Self::ModelType, Self::CmdType, E>>(&mut self) -> Result<Result<U, E>, Self::StoreErr> {
+        if self.can_undo()? {
             self.location -= 1;
             let cmd = &self.store[self.location];
-            cmd.undo(&mut self.model);
+            Ok(cmd.undo(&mut self.model))
+        } else {
+            Err(InMemoryStoreErr::CannotUndoRedo)
         }
     }
 
     #[inline]
-    fn can_redo(&self) -> bool {
-        self.location < self.store.len()
+    fn can_redo(&self) -> Result<bool, Self::StoreErr> {
+        Ok(self.location < self.store.len())
     }
 
-    fn redo(&mut self) {
-        if self.can_redo() {
+    fn redo<E, R: Redo<Self::ModelType, Self::CmdType, E>>(&mut self) -> Result<Result<R, E>, Self::StoreErr> {
+        if self.can_redo()? {
             let cmd = &mut self.store[self.location];
             // redo should success.
-            let _ = cmd.redo(&mut self.model);
+            let resp = cmd.redo(&mut self.model);
             self.location += 1;
+            Ok(resp)
+        } else {
+            Err(InMemoryStoreErr::CannotUndoRedo)
         }
     }
 
@@ -127,43 +134,26 @@ pub struct SqliteUndoStore<C, M> where M: Default + serde::Serialize + serde::de
 #[cfg(feature = "persistence")]
 #[derive(Debug)]
 pub enum SqliteUndoStoreError {
-    FileError(std::path::PathBuf, std::io::Error),
-    NotADirectory,
-    CannotLock(std::path::PathBuf),
-    CannotDeserialize(bincode::Error),
-    OrphanSnapshot { snapshot_id: i64, command_id: i64 },
-    DbError(std::path::PathBuf, rusqlite::Error),
-}
-
-#[cfg(feature = "persistence")]
-#[derive(Debug)]
-pub enum SqliteUndoStoreAddCmdError {
+    // Add
     CannotWriteCmd(std::path::PathBuf, std::io::Error),
     SerializeError(bincode::Error),
     NeedCompaction(std::path::PathBuf),
-    DbError(std::path::PathBuf, rusqlite::Error),
-}
 
-#[cfg(feature = "persistence")]
-#[derive(Debug)]
-pub enum SqliteUndoStoreLoadCmdError {
+    // Load
     NotFound(std::path::PathBuf),
     CannotReadCmd(std::path::PathBuf, std::io::Error),
     DeserializeError(serde_json::Error),
-}
 
-#[cfg(feature = "persistence")]
-#[derive(Debug)]
-pub enum SqliteUndoStoreCanUndoError {
-    DbError(std::path::PathBuf, rusqlite::Error),
-}
-
-#[cfg(feature = "persistence")]
-#[derive(Debug)]
-pub enum SqliteUndoStoreUndoRedoError {
+    // Undo/Redo
     CannotUndoRedo,
+
+    // Common
+    FileError(std::path::PathBuf, std::io::Error),
+    NotADirectory,
+    CannotLock(std::path::PathBuf),
+    CannotDeserialize(Option<std::path::PathBuf>, i64, bincode::Error),
+    OrphanSnapshot { snapshot_id: i64, command_id: i64 },
     DbError(std::path::PathBuf, rusqlite::Error),
-    CannotDeserialize(std::path::PathBuf, i64, bincode::Error),
 }
 
 #[cfg(feature = "persistence")]
@@ -244,18 +234,18 @@ impl<C, M> SqliteUndoStore<C, M> where M: Default + serde::Serialize + serde::de
     }
 
     #[inline]
-    fn db_add_cmd<F, T>(&self, f: F) -> Result<T, SqliteUndoStoreAddCmdError> where F: FnOnce() -> Result<T, rusqlite::Error> {
-        f().map_err(|e| SqliteUndoStoreAddCmdError::DbError(self.sqlite_path.clone(), e))
+    fn db_add_cmd<F, T>(&self, f: F) -> Result<T, SqliteUndoStoreError> where F: FnOnce() -> Result<T, rusqlite::Error> {
+        f().map_err(|e| SqliteUndoStoreError::DbError(self.sqlite_path.clone(), e))
     }
 
     #[inline]
-    fn db_can_undo<F, T>(&self, f: F) -> Result<T, SqliteUndoStoreCanUndoError> where F: FnOnce() -> Result<T, rusqlite::Error> {
-        f().map_err(|e| SqliteUndoStoreCanUndoError::DbError(self.sqlite_path.clone(), e))
+    fn db_can_undo<F, T>(&self, f: F) -> Result<T, SqliteUndoStoreError> where F: FnOnce() -> Result<T, rusqlite::Error> {
+        f().map_err(|e| SqliteUndoStoreError::DbError(self.sqlite_path.clone(), e))
     }
 
     #[inline]
-    fn db_undo<F, T>(&self, f: F) -> Result<T, SqliteUndoStoreUndoRedoError> where F: FnOnce() -> Result<T, rusqlite::Error> {
-        f().map_err(|e| SqliteUndoStoreUndoRedoError::DbError(self.sqlite_path.clone(), e))
+    fn db_undo<F, T>(&self, f: F) -> Result<T, SqliteUndoStoreError> where F: FnOnce() -> Result<T, rusqlite::Error> {
+        f().map_err(|e| SqliteUndoStoreError::DbError(self.sqlite_path.clone(), e))
     }
 
     fn load_last_snapshot(&self) -> Result<(i64, M), SqliteUndoStoreError> {
@@ -268,7 +258,7 @@ impl<C, M> SqliteUndoStore<C, M> where M: Default + serde::Serialize + serde::de
             let id: i64 = self.db(|| row.get(0))?;
             let serialized: Vec<u8> = self.db(|| row.get(1))?;
             let snapshot: M = bincode::deserialize(&serialized).map_err(|e|
-                SqliteUndoStoreError::CannotDeserialize(e)
+                SqliteUndoStoreError::CannotDeserialize(None, id, e)
             )?;
             Ok((id, snapshot))
         } else {
@@ -296,11 +286,11 @@ impl<C, M> SqliteUndoStore<C, M> where M: Default + serde::Serialize + serde::de
 
             let serialized: Vec<u8> = self.db(|| first_row.get(1))?;
             let mut cmd: C = bincode::deserialize(&serialized).map_err(|e|
-                SqliteUndoStoreError::CannotDeserialize(e)
+                SqliteUndoStoreError::CannotDeserialize(None, id, e)
             )?;
 
             // redo should success.
-            let _ = cmd.redo(&mut model);
+            cmd.restore(&mut model);
             last_id = id;
         }
 
@@ -308,10 +298,10 @@ impl<C, M> SqliteUndoStore<C, M> where M: Default + serde::Serialize + serde::de
             let id: i64 = self.db(|| row.get(0))?;
             let serialized: Vec<u8> = self.db(|| row.get(1))?;
             let mut cmd: C = bincode::deserialize(&serialized).map_err(|e|
-                SqliteUndoStoreError::CannotDeserialize(e)
+                SqliteUndoStoreError::CannotDeserialize(None, id, e)
             )?;
             // redo should success.             
-            let _ = cmd.redo(&mut model);
+            cmd.restore(&mut model);
             last_id = id;
         }
         self.model = model;
@@ -338,13 +328,13 @@ impl<C, M> SqliteUndoStore<C, M> where M: Default + serde::Serialize + serde::de
         Ok(stmt.execute(rusqlite::params![self.undo_limit])?)
     }
 
-    fn save_snapshot(&self) -> Result<(), SqliteUndoStoreAddCmdError> {
+    fn save_snapshot(&self) -> Result<(), SqliteUndoStoreError> {
         let mut stmt = 
         self.db_add_cmd(|| self.conn.prepare(
             "insert into snapshot (snapshot_id, serialized) values (?1, ?2)"
         ))?;
         let serialized = bincode::serialize(&self.model).map_err(|e|
-            SqliteUndoStoreAddCmdError::SerializeError(e)
+            SqliteUndoStoreError::SerializeError(e)
         )?;
         self.db_add_cmd(|| stmt.execute(rusqlite::params![self.cur_cmd_seq_no, serialized]))?;
 
@@ -368,21 +358,19 @@ impl<Command, M> UndoStore for SqliteUndoStore<Command, M>
   where M: Default + serde::Serialize + serde::de::DeserializeOwned + 'static, Command: crate::cmd::SerializableCmd<Model = M>
 {
     type ModelType = M;
-    type AddCmdRet = Result<Result<Command::RedoResp, Command::RedoErr>, SqliteUndoStoreAddCmdError>;
     type CmdType = Command;
-    type UndoErr = Result<(), SqliteUndoStoreUndoRedoError>;
-    type CanUndoRet = Result<bool, SqliteUndoStoreCanUndoError>;
+    type StoreErr = SqliteUndoStoreError;
 
     fn model(&self) -> &M { &self.model }
 
-    fn add_cmd(&mut self, mut cmd: Self::CmdType) -> Self::AddCmdRet {
-        let ret: Result<<Command as Cmd>::RedoResp, <Command as Cmd>::RedoErr> = cmd.redo(&mut self.model);
-        if ret.is_err() {
-            return Ok(ret);
+    fn add_cmd<E, R: Redo<Self::ModelType, Self::CmdType, E>>(&mut self, mut cmd: Self::CmdType) -> Result<Result<R, E>, Self::StoreErr> {
+        let res = cmd.redo(&mut self.model);
+        if res.is_err() {
+            return Ok(res);
         }
 
         let serialized: Vec<u8> = bincode::serialize(&cmd).map_err(
-            |e| SqliteUndoStoreAddCmdError::SerializeError(e)
+            |e| SqliteUndoStoreError::SerializeError(e)
         )?;
         self.db_add_cmd(|| self.conn.execute(
             "insert into command (serialized) values (?1) ", rusqlite::params![serialized])
@@ -390,17 +378,17 @@ impl<Command, M> UndoStore for SqliteUndoStore<Command, M>
 
         self.cur_cmd_seq_no = self.conn.last_insert_rowid();
         if self.cur_cmd_seq_no == MAX_ROWID {
-            return Err(SqliteUndoStoreAddCmdError::NeedCompaction(self.sqlite_path.clone()));
+            return Err(SqliteUndoStoreError::NeedCompaction(self.sqlite_path.clone()));
         }
         self.db_add_cmd(|| self.trim_snapshots())?;
         let removed_count = self.db_add_cmd(|| self.trim_undo_records())?;
         if removed_count != 0 {
             self.save_snapshot()?;
         }
-        Ok(ret)
+        Ok(res)
     }
 
-    fn can_undo(&self) -> Self::CanUndoRet {
+    fn can_undo(&self) -> Result<bool, Self::StoreErr> {
         let mut stmt = self.db_can_undo(|| self.conn.prepare(
             "select 1 from command where rowid <= ?1"
         ))?;
@@ -409,7 +397,7 @@ impl<Command, M> UndoStore for SqliteUndoStore<Command, M>
         Ok(row.is_some())
     }
 
-    fn undo(&mut self) -> Self::UndoErr {
+    fn undo<E, U: Undo<Self::ModelType, Self::CmdType, E>>(&mut self) -> Result<Result<U, E>, Self::StoreErr> {
         let mut stmt = self.db_undo(|| self.conn.prepare(
             "select serialized from command where rowid = ?1"
         ))?;
@@ -417,19 +405,19 @@ impl<Command, M> UndoStore for SqliteUndoStore<Command, M>
         if let Some(row) = self.db_undo(|| rows.next())? {
             let serialized: Vec<u8> = self.db_undo(|| row.get(0))?;
             let cmd: Self::CmdType = bincode::deserialize(&serialized).map_err(|e|
-                SqliteUndoStoreUndoRedoError::CannotDeserialize(
-                    self.sqlite_path.clone(), self.cur_cmd_seq_no, e
+                SqliteUndoStoreError::CannotDeserialize(
+                    Some(self.sqlite_path.clone()), self.cur_cmd_seq_no, e
                 )
             )?;
-            cmd.undo(&mut self.model);
+            let res = cmd.undo(&mut self.model);
             self.cur_cmd_seq_no -= 1;
-            Ok(())
+            Ok(res)
         } else {
-            Err(SqliteUndoStoreUndoRedoError::CannotUndoRedo)
+            Err(SqliteUndoStoreError::CannotUndoRedo)
         }
     }
 
-    fn can_redo(&self) -> Self::CanUndoRet {
+    fn can_redo(&self) -> Result<bool, Self::StoreErr> {
         let mut stmt = self.db_can_undo(|| self.conn.prepare(
             "select 1 from command where ?1 < rowid"
         ))?;
@@ -438,7 +426,7 @@ impl<Command, M> UndoStore for SqliteUndoStore<Command, M>
         Ok(row.is_some())
     }
 
-    fn redo(&mut self) -> Self::UndoErr {
+    fn redo<E, R: Redo<Self::ModelType, Self::CmdType, E>>(&mut self) -> Result<Result<R, E>, Self::StoreErr> {
         let mut  stmt = self.db_undo(|| self.conn.prepare(
             "select serialized from command where rowid = ?1"
         ))?;
@@ -446,23 +434,25 @@ impl<Command, M> UndoStore for SqliteUndoStore<Command, M>
         if let Some(row) = self.db_undo(|| rows.next())? {
             let serialized: Vec<u8> = self.db_undo(|| row.get(0))?;
             let mut cmd: Self::CmdType = bincode::deserialize(&serialized).map_err(|e|
-                SqliteUndoStoreUndoRedoError::CannotDeserialize(
-                    self.sqlite_path.clone(), self.cur_cmd_seq_no, e
+                SqliteUndoStoreError::CannotDeserialize(
+                    Some(self.sqlite_path.clone()), self.cur_cmd_seq_no, e
                 )
             )?;
             // redo() should success.
-            let _ = cmd.redo(&mut self.model);
+            let resp = cmd.redo(&mut self.model);
             self.cur_cmd_seq_no += 1;
-            Ok(())
+            Ok(resp)
         } else {
-            Err(SqliteUndoStoreUndoRedoError::CannotUndoRedo)
+            Err(SqliteUndoStoreError::CannotUndoRedo)
         }
     }
 }
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
-    use super::{Cmd, InMemoryUndoStore, UndoStore};
+    use crate::cmd::{Undo, Redo};
+
+    use super::{Cmd, InMemoryUndoStore, UndoStore, InMemoryStoreErr, SqliteUndoStoreError};
 
     enum SumCmd {
         Add(i32), Sub(i32),
@@ -477,31 +467,42 @@ mod tests {
         }
     }
 
-    impl Cmd for SumCmd {
-        type Model = Sum;
-        type RedoErr = ();
-        type RedoResp = ();
-
-        fn undo(&self, model: &mut Self::Model) {
-            match self {
-                SumCmd::Add(i) => model.0 -= *i,
-                SumCmd::Sub(i) => model.0 += *i,
+    impl Undo<Sum, SumCmd, ()> for () {
+        fn undo(cmd: &SumCmd, model: &mut Sum) -> Result<Self, ()> {
+            match cmd {
+                SumCmd::Add(i) => {
+                    model.0 -= *i;
+                },
+                SumCmd::Sub(i) => {
+                    model.0 += *i;
+                }
             }
+            Ok(())
         }
+    }
 
-        fn redo(&mut self, model: &mut Self::Model) -> Result<Self::RedoResp, Self::RedoErr> {
-            match self {
+    impl Redo<Sum, SumCmd, ()> for () {
+        fn redo(cmd: &mut SumCmd, model: &mut Sum) -> Result<Self, ()> {
+            match cmd {
                 SumCmd::Add(i) => {
                     model.0 += *i;
-                    Ok(())
                 },
                 SumCmd::Sub(i) => {
                     model.0 -= *i;
-                    Ok(())
                 },
             }
+            Ok(())
         }
     }
+
+    impl Cmd for SumCmd {
+        type Model = Sum;
+
+        fn restore(&mut self, model: &mut Self::Model) {
+            let _ = self.redo::<(), ()>(model);
+        }
+    }
+
 
     #[derive(PartialEq, Debug)]
     enum CmdErr {
@@ -517,21 +518,20 @@ mod tests {
         Add(i32), Sub(i32), SideEffectAdd10(i32),
     }
 
-    impl Cmd for MayErrCmd {
-        type Model = Sum;
-        type RedoErr = CmdErr;
-        type RedoResp = CmdResp;
-
-        fn undo(&self, model: &mut Self::Model) {
-            match self {
+    impl Undo<Sum, MayErrCmd, ()> for () {
+        fn undo(cmd: &MayErrCmd, model: &mut Sum) -> Result<Self, ()> {
+            match cmd {
                 MayErrCmd::Add(i) => model.0 -= *i,
                 MayErrCmd::Sub(i) => model.0 += *i,
                 MayErrCmd::SideEffectAdd10(i) => model.0 -= *i,
             }
+            Ok(())
         }
+    }
 
-        fn redo(&mut self, model: &mut Self::Model) -> Result<Self::RedoResp, Self::RedoErr> {
-            match self {
+    impl Redo<Sum, MayErrCmd, CmdErr> for CmdResp {
+        fn redo(cmd: &mut MayErrCmd, model: &mut Sum) -> Result<CmdResp, CmdErr> {
+            match cmd {
                 MayErrCmd::Add(i) => {
                     if *i == 999 {
                         return Err(CmdErr::Err1);
@@ -547,8 +547,16 @@ mod tests {
                     *i += 10;
                     model.0 += *i;
                     Ok(CmdResp::Resp1)
-                },
+                }
             }
+        }
+    }
+
+    impl Cmd for MayErrCmd {
+        type Model = Sum;
+
+        fn restore(&mut self, model: &mut Self::Model) {
+            let _: Result<CmdResp, CmdErr> = self.redo(model);
         }
     }
 
@@ -562,11 +570,11 @@ mod tests {
         type Resp = ();
 
         fn add(&mut self, to_add: i32) {
-            self.add_cmd(SumCmd::Add(to_add));
+            let _: Result<Result<(), ()>, InMemoryStoreErr> = self.add_cmd(SumCmd::Add(to_add));
         }
 
         fn sub(&mut self, to_sub: i32) {
-            self.add_cmd(SumCmd::Sub(to_sub));
+            let _: Result<Result<(), ()>, InMemoryStoreErr> = self.add_cmd(SumCmd::Sub(to_sub));
         }
     }
 
@@ -574,29 +582,32 @@ mod tests {
         type Resp = Result<CmdResp, CmdErr>;
         fn add(&mut self, to_add: i32) -> Self::Resp {
             if to_add == 12345 {
-                self.add_cmd(MayErrCmd::SideEffectAdd10(to_add))
+                let result: Result<Self::Resp, InMemoryStoreErr> = self.add_cmd(MayErrCmd::SideEffectAdd10(to_add));
+                result.unwrap()
             } else {
-                self.add_cmd(MayErrCmd::Add(to_add))
+                let result: Result<Self::Resp, InMemoryStoreErr> = self.add_cmd(MayErrCmd::Add(to_add));
+                result.unwrap()
             }
         }
 
         fn sub(&mut self, to_sub: i32) -> Self::Resp{
-            self.add_cmd(MayErrCmd::Sub(to_sub))
+            let result: Result<Self::Resp, InMemoryStoreErr> = self.add_cmd(MayErrCmd::Sub(to_sub));
+            result.unwrap()
         }
     }
 
     #[test]
     fn can_undo_in_memory_store() {
         let mut store: InMemoryUndoStore<SumCmd, Sum> = InMemoryUndoStore::new(3);
-        assert_eq!(store.can_undo(), false);
+        assert_eq!(store.can_undo().unwrap(), false);
         store.add(3);
         assert_eq!(store.model().0, 3);
 
-        assert_eq!(store.can_undo(), true);
-        store.undo();
+        assert_eq!(store.can_undo().unwrap(), true);
+        let _: Result<Result<(), ()>, InMemoryStoreErr> = store.undo();
         assert_eq!(store.model().0, 0);
 
-        assert_eq!(store.can_undo(), false);
+        assert_eq!(store.can_undo().unwrap(), false);
     }
 
     #[test]
@@ -617,22 +628,22 @@ mod tests {
     #[test]
     fn can_undo_redo_in_memory_store() {
         let mut store: InMemoryUndoStore<SumCmd, Sum> = InMemoryUndoStore::new(3);
-        assert_eq!(store.can_undo(), false);
+        assert_eq!(store.can_undo().unwrap(), false);
         store.add(3);
 
-        assert_eq!(store.can_undo(), true);
-        assert_eq!(store.can_redo(), false);
-        store.undo();
+        assert_eq!(store.can_undo().unwrap(), true);
+        assert_eq!(store.can_redo().unwrap(), false);
+        let _: Result<Result<(), ()>, InMemoryStoreErr> = store.undo();
         assert_eq!(store.model().0, 0);
 
-        assert_eq!(store.can_undo(), false);
-        assert_eq!(store.can_redo(), true);
-        store.redo();
+        assert_eq!(store.can_undo().unwrap(), false);
+        assert_eq!(store.can_redo().unwrap(), true);
+        let _: Result<Result<(), ()>, InMemoryStoreErr> = store.redo();
         assert_eq!(store.model().0, 3);
 
-        assert_eq!(store.can_undo(), true);
-        assert_eq!(store.can_redo(), false);
-        store.undo();
+        assert_eq!(store.can_undo().unwrap(), true);
+        assert_eq!(store.can_redo().unwrap(), false);
+        let _: Result<Result<(), ()>, InMemoryStoreErr> = store.undo();
         assert_eq!(store.model().0, 0);
     }
 
@@ -646,7 +657,7 @@ mod tests {
 
         // 3, 4, 5
         assert_eq!(store.model().0, 12);
-        store.undo(); // Undo0 Cancel Add(5)
+        let _: Result<Result<(), ()>, InMemoryStoreErr> = store.undo(); // Undo0 Cancel Add(5)
         // 3, 4
         assert_eq!(store.model().0, 7);
 
@@ -654,11 +665,11 @@ mod tests {
         // 3, 4, 6
         assert_eq!(store.model().0, 13);
 
-        store.undo(); // Cancel Add(6)
+        let _: Result<Result<(), ()>, InMemoryStoreErr> = store.undo(); // Cancel Add(6)
         // 3, 4
         assert_eq!(store.model().0, 7);
 
-        store.undo(); // Cancel Undo0
+        let _: Result<Result<(), ()>, InMemoryStoreErr> = store.undo(); // Cancel Undo0
         // 3
         assert_eq!(store.model().0, 3);
     }
@@ -681,29 +692,33 @@ mod tests {
     }
 
     #[cfg(feature = "persistence")]
+    impl Redo<SerSum, SerSumCmd, ()> for () {
+        fn redo(cmd: &mut SerSumCmd, model: &mut SerSum) -> Result<(), ()> {
+            match cmd {
+                SerSumCmd::Add(i) => model.0 += *i,
+                SerSumCmd::Sub(i) => model.0 -= *i,
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "persistence")]
+    impl Undo<SerSum, SerSumCmd, ()> for () {
+        fn undo(cmd: &SerSumCmd, model: &mut SerSum) -> Result<(), ()> {
+            match cmd {
+                SerSumCmd::Add(i) => model.0 -= i,
+                SerSumCmd::Sub(i) => model.0 += i,
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "persistence")]
     impl Cmd for SerSumCmd {
         type Model = SerSum;
-        type RedoResp = ();
-        type RedoErr = ();
 
-        fn undo(&self, model: &mut Self::Model) {
-            match self {
-                SerSumCmd::Add(i) => { model.0 -= i },
-                SerSumCmd::Sub(i) => { model.0 += i },
-            }
-        }
-
-        fn redo(&mut self, model: &mut Self::Model) -> Result<Self::RedoResp, Self::RedoErr> {
-            match self {
-                SerSumCmd::Add(i) => {
-                    model.0 += *i;
-                    Ok(())
-                },
-                SerSumCmd::Sub(i) => {
-                     model.0 -= *i;
-                     Ok(())
-                },
-            }
+        fn restore(&mut self, model: &mut Self::Model) {
+            let _: Result<(), ()> = self.redo(model);
         }
     }
 
@@ -713,19 +728,19 @@ mod tests {
 
     #[cfg(feature = "persistence")]
     trait SerModel {
-        fn add(&mut self, to_add: i32) -> Result<(), super::SqliteUndoStoreAddCmdError>;
-        fn sub(&mut self, to_sub: i32) -> Result<(), super::SqliteUndoStoreAddCmdError>;
+        fn add(&mut self, to_add: i32) -> Result<(), super::SqliteUndoStoreError>;
+        fn sub(&mut self, to_sub: i32) -> Result<(), super::SqliteUndoStoreError>;
     }
 
     #[cfg(feature = "persistence")]
     impl SerModel for super::SqliteUndoStore::<SerSumCmd, SerSum> {
-        fn add(&mut self, to_add: i32) -> Result<(), super::SqliteUndoStoreAddCmdError> {
-            self.add_cmd(SerSumCmd::Add(to_add));
+        fn add(&mut self, to_add: i32) -> Result<(), super::SqliteUndoStoreError> {
+            let _: Result<Result<(), ()>, SqliteUndoStoreError> = self.add_cmd(SerSumCmd::Add(to_add));
             Ok(())
         }
 
-        fn sub(&mut self, to_sub: i32) -> Result<(), super::SqliteUndoStoreAddCmdError> {
-            self.add_cmd(SerSumCmd::Sub(to_sub));
+        fn sub(&mut self, to_sub: i32) -> Result<(), super::SqliteUndoStoreError> {
+            let _: Result<Result<(), ()>, SqliteUndoStoreError> = self.add_cmd(SerSumCmd::Sub(to_sub));
             Ok(())
         }
     }
@@ -807,16 +822,16 @@ mod tests {
         assert_eq!(store.model().0, 123 - 234);
 
         assert!(store.can_undo().unwrap());
-        store.undo().unwrap();
+        let _: Result<(), ()> = store.undo().unwrap();
         assert_eq!(store.model().0, 123);
 
-        store.undo().unwrap();
+        let _: Result<(), ()> = store.undo().unwrap();
         assert_eq!(store.model().0, 0);
 
-        store.redo().unwrap();
+        let _: Result<(), ()> = store.redo().unwrap();
         assert_eq!(store.model().0, 123);
 
-        store.redo().unwrap();
+        let _: Result<(), ()> = store.redo().unwrap();
         assert_eq!(store.model().0, 123 - 234);
     }
 
@@ -834,7 +849,7 @@ mod tests {
         
         let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), None).unwrap();
         assert_eq!(store.model().0, 123);
-        store.undo().unwrap();
+        let _: Result<(), ()> = store.undo().unwrap();
         assert_eq!(store.model().0, 0);
     }
 
@@ -851,9 +866,9 @@ mod tests {
         // 1, 2, 3
         assert_eq!(store.model().0, 6);
 
-        store.undo().unwrap();
+        let _: Result<(), ()> = store.undo().unwrap();
         // 1, 2
-        store.undo().unwrap();
+        let _: Result<(), ()> = store.undo().unwrap();
         // 1
 
         store.add(100).unwrap();
@@ -864,7 +879,7 @@ mod tests {
     #[cfg(feature = "persistence")]
     #[test]
     fn file_undo_store_can_set_limit() {
-        use super::SqliteUndoStoreUndoRedoError;
+        use super::SqliteUndoStoreError;
 
         let dir = tempdir().unwrap();
         let mut dir = dir.as_ref().to_path_buf();
@@ -878,16 +893,17 @@ mod tests {
         store.add(6).unwrap(); // 2, 3, 4, 5, 6
         assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 5 + 6);
 
-        store.undo().unwrap();
-        store.undo().unwrap();
-        store.undo().unwrap();
-        store.undo().unwrap();
-        store.undo().unwrap();
+        let _: Result<(), ()> = store.undo().unwrap();
+        let _: Result<(), ()> = store.undo().unwrap();
+        let _: Result<(), ()> = store.undo().unwrap();
+        let _: Result<(), ()> = store.undo().unwrap();
+        let _: Result<(), ()> = store.undo().unwrap();
         assert_eq!(store.model().0, 1);
 
-        let err = store.undo().err().unwrap();
+        let result: Result<Result<(), ()>, SqliteUndoStoreError> = store.undo();
+        let err = result.err().unwrap();
         match &err {
-            SqliteUndoStoreUndoRedoError::CannotUndoRedo => {},
+            SqliteUndoStoreError::CannotUndoRedo => {},
             _ => panic!("Error {:?}", err),
         }
     }
@@ -929,8 +945,8 @@ mod tests {
         // snapshot of 6 is taken.
         store.add(6).unwrap();
 
-        store.undo().unwrap(); // 2, 3, 4, 5
-        store.undo().unwrap(); // 2, 3, 4
+        let _: Result<(), ()> = store.undo().unwrap(); // 2, 3, 4, 5
+        let _: Result<(), ()> = store.undo().unwrap(); // 2, 3, 4
         assert_eq!(store.model().0, 1 + 2 + 3 + 4);
         store.add(7).unwrap();
         assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 7);

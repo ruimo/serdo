@@ -1,10 +1,23 @@
-pub trait Cmd {
-    type Model;
-    type RedoResp;
-    type RedoErr;
+pub trait Undo<M, C: Cmd<Model = M>, E>: Sized {
+    fn undo(cmd: &C, model: &mut M) -> Result<Self, E>;
+}
 
-    fn undo(&self, model: &mut Self::Model);
-    fn redo(&mut self, model: &mut Self::Model) -> Result<Self::RedoResp, Self::RedoErr>;
+pub trait Redo<M, C: Cmd<Model = M>, E>: Sized {
+    fn redo(cmd: &mut C, model: &mut M) -> Result<Self, E>;
+}
+
+pub trait Cmd: Sized {
+    type Model;
+
+    fn undo<E, U: Undo<Self::Model, Self, E>>(&self, model: &mut Self::Model) -> Result<U, E> {
+        U::undo(self, model)
+    }
+
+    fn redo<E, R: Redo<Self::Model, Self, E>>(&mut self, model: &mut Self::Model) -> Result<R, E> {
+        R::redo(self, model)
+    }
+
+    fn restore(&mut self, model: &mut Self::Model);
 }
 
 #[cfg(feature = "persistence")]
@@ -13,7 +26,7 @@ pub trait SerializableCmd: Cmd + serde::Serialize + serde::de::DeserializeOwned 
 
 #[cfg(test)]
 mod tests {
-    use super::Cmd;
+    use super::{Cmd, Undo, Redo};
 
     enum SumAction {
         Add(i32), Sub(i32),
@@ -21,42 +34,52 @@ mod tests {
 
     struct Sum(i32);
 
-    impl Cmd for SumAction {
-        type Model = Sum;
-        type RedoResp = ();
-        type RedoErr = ();
-
-        fn undo(&self, model: &mut Self::Model) {
-            match self {
-                SumAction::Add(i) => model.0 -= *i,
-                SumAction::Sub(i) => model.0 += *i,
+    impl Undo<Sum, SumAction, ()> for () {
+        fn undo(cmd: &SumAction, model: &mut Sum) -> Result<Self, ()> {
+            match cmd {
+                SumAction::Add(i) => {
+                    model.0 -= i;
+                },
+                SumAction::Sub(i) => {
+                    model.0 += i;
+                }
             }
+            Ok(())
         }
+    }
 
-        fn redo(&mut self, model: &mut Self::Model) -> Result<Self::RedoResp, Self::RedoErr> {
-            match self {
+    impl Redo<Sum, SumAction, ()> for () {
+        fn redo(cmd: &mut SumAction, model: &mut Sum) -> Result<Self, ()> {
+            match cmd {
                 SumAction::Add(i) => {
                     model.0 += *i;
-                    Ok(())
                 },
                 SumAction::Sub(i) => {
                     model.0 -= *i;
-                    Ok(())
-                }
+                },
             }
+            Ok(())
+        }
+    }
+
+    impl Cmd for SumAction {
+        type Model = Sum;
+
+        fn restore(&mut self, model: &mut Self::Model) {
+            let _ = self.redo::<(), ()>(model);
         }
     }
 
     #[test]
     fn do_action() {
-        let action = SumAction::Add(3);
+        let mut action = SumAction::Add(3);
         let mut model = Sum(100);
 
-        action.undo(&mut model);
+        action.undo::<(), ()>(&mut model);
         assert_eq!(model.0, 97);
 
         let action = SumAction::Sub(3);
-        action.undo(&mut model);
+        action.undo::<(), ()>(&mut model);
         assert_eq!(model.0, 100);
     }
 }
