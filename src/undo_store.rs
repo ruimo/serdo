@@ -64,7 +64,9 @@ impl<C, M> UndoStore for InMemoryUndoStore<C, M>
     type CmdType = C;
     type StoreErr = InMemoryStoreErr;
 
-    fn add_cmd<E, R: Redo<Self::ModelType, Self::CmdType, E>>(&mut self, mut cmd: Self::CmdType) -> Result<Result<R, E>, Self::StoreErr> {
+    fn add_cmd<E, R: Redo<Self::ModelType, Self::CmdType, E>>(
+        &mut self, mut cmd: Self::CmdType
+    ) -> Result<Result<R, E>, Self::StoreErr> {
         if self.location < self.store.len() {
             self.store.truncate(self.location);
         }

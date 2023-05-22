@@ -1,80 +1,80 @@
 use std::io;
-use serdo::{cmd::Cmd, undo_store::{UndoStore, InMemoryUndoStore}};
+use serdo::{cmd::{Cmd, Redo, Undo}, undo_store::{UndoStore, InMemoryUndoStore, InMemoryStoreErr}};
 
-struct AddCmd(i32);
-struct DivCmd(i32);
+enum AddDivCmd {
+    Add(i32), Div(i32),
+}
 
 #[derive(Default)]
 struct Sum(i32);
-
-trait AddDivCmd: Cmd {}
-
-impl AddDivCmd for AddCmd {}
-
-impl AddDivCmd for DivCmd {}
-
-impl Cmd for AddCmd {
-    type Model = Sum;
-    type RedoErr = ();
-    type RedoResp = ();
-
-    fn undo(&self, model: &mut Self::Model) {
-        model.0 -= self.0;
-    }
-
-    fn redo(&mut self, model: &mut Self::Model) -> Result<Self::RedoResp, Self::RedoErr> {
-        model.0 += self.0;
-        Ok(())
-    }
-}
 
 enum DivCmdErr {
     DivByZero,
 }
 
-impl Cmd for DivCmd {
-    type Model = Sum;
-    type RedoErr = DivCmdErr;
-    type RedoResp = ();
-
-    fn undo(&self, model: &mut Self::Model) {
-        model.0 *= self.0;
-    }
-
-    fn redo(&mut self, model: &mut Self::Model) -> Result<Self::RedoResp, Self::RedoErr> {
-        if self.0 == 0 {
-            Err(DivCmdErr::DivByZero)
-        } else {
-            model.0 /= self.0;
-            Ok(())
+impl Redo<Sum, AddDivCmd, DivCmdErr> for () {
+    fn redo(cmd: &mut AddDivCmd, model: &mut Sum) -> Result<Self, DivCmdErr> {
+        match cmd {
+            AddDivCmd::Add(i) => {
+                model.0 += *i;
+                Ok(())
+            },
+            AddDivCmd::Div(i) => {
+                if *i == 0 {
+                    Err(DivCmdErr::DivByZero)
+                } else {
+                    model.0 /= *i;
+                    Ok(())
+                }
+            }
         }
+    }
+}
+
+impl Undo<Sum, AddDivCmd, ()> for () {
+    fn undo(cmd: &AddDivCmd, model: &mut Sum) -> Result<Self, ()> {
+        match cmd {
+            AddDivCmd::Add(i) => model.0 -= *i,
+            AddDivCmd::Div(i) => model.0 *= *i,
+        }
+
+        Ok(())
     }
 }
 
 trait Model {
     fn add(&mut self, to_add: i32);
-    fn div(&mut self, to_div: i32);
+    fn div(&mut self, to_div: i32) -> Result<(), DivCmdErr>;
 }
 
-impl Model for InMemoryUndoStore<Box<dyn AddDivCmd>, Sum> {
+impl Cmd for AddDivCmd {
+    type Model = Sum;
+
+    fn restore(&mut self, model: &mut Self::Model) {
+        let _:Result<(), DivCmdErr> = self.redo(model);
+    }
+}
+
+impl Model for InMemoryUndoStore<AddDivCmd, Sum> {
     fn add(&mut self, to_add: i32) {
-        self.add_cmd(SumCmd::Add(to_add));
+        let _: Result<Result<(), DivCmdErr>, InMemoryStoreErr> = self.add_cmd(AddDivCmd::Add(to_add));
     }
 
-    fn mul(&mut self, to_mul: i32) {
-        self.add_cmd(SumCmd::Mul(to_mul));
+    fn div(&mut self, to_div: i32) -> Result<(), DivCmdErr> {
+        let result: Result<Result<(), DivCmdErr>, InMemoryStoreErr> = self.add_cmd(AddDivCmd::Div(to_div));
+        result.unwrap()
     }
 }
 
 fn main() {
     let mut line_buf = String::new();
-    let mut store: InMemoryUndoStore<SumCmd, Sum> = InMemoryUndoStore::new(10);
+    let mut store: InMemoryUndoStore<AddDivCmd, Sum> = InMemoryUndoStore::new(10);
     loop {
         println!("Current sum: {:?}", store.model().0);
         println!(
-            "Command(+n: add number, *n: multiply number, {}{}q: quit):",
-            if store.can_undo() { "u: undo, " } else { "" },
-            if store.can_redo() { "r: redo, " } else { "" }
+            "Command(+n: add number, /n: divide number, {}{}q: quit):",
+            if store.can_undo().unwrap() { "u: undo, " } else { "" },
+            if store.can_redo().unwrap() { "r: redo, " } else { "" }
         );
         io::stdin().read_line(&mut line_buf).unwrap();
         
@@ -82,17 +82,27 @@ fn main() {
         if cmd.starts_with("+") {
             let num: i32 = cmd[1..].trim().parse().unwrap();
             store.add(num);
-        } else if line_buf.starts_with("*") {
+        } else if line_buf.starts_with("/") {
             let num: i32 = cmd[1..].trim().parse().unwrap();
-            store.mul(num);
+            match store.div(num) {
+                Ok(_) => {},
+                Err(DivCmdErr::DivByZero) => {
+                    println!("Divide by zero.")
+                },
+            };
         } else if cmd == "u" {
-            if store.can_undo() {
-                store.undo();
+            if store.can_undo().unwrap() {
+                match store.undo() {
+                    Ok(_) => {},
+                    Err(InMemoryStoreErr::CannotUndoRedo) => {
+                        println!("Cannot undo.");
+                    }
+                }
             } else {
                 println!("Cannot undo now.");
             }
         } else if cmd == "r" {
-            if store.can_redo() {
+            if store.can_redo().unwrap() {
                 store.redo();
             } else {
                 println!("Cannot redo now.");

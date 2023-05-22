@@ -1,12 +1,12 @@
-pub trait Undo<M, C: Cmd<Model = M>, E>: Sized {
-    fn undo(cmd: &C, model: &mut M) -> Result<Self, E>;
+pub trait Undo<M, C: Cmd<Model = M> + ?Sized, E>: Sized {
+    fn undo(cmd: &C, model: &mut M) -> Result<Self, E> where Self: Sized;
 }
 
-pub trait Redo<M, C: Cmd<Model = M>, E>: Sized {
-    fn redo(cmd: &mut C, model: &mut M) -> Result<Self, E>;
+pub trait Redo<M, C: Cmd<Model = M> + ?Sized, E>: Sized {
+    fn redo(cmd: &mut C, model: &mut M) -> Result<Self, E> where Self: Sized;
 }
 
-pub trait Cmd: Sized {
+pub trait Cmd {
     type Model;
 
     fn undo<E, U: Undo<Self::Model, Self, E>>(&self, model: &mut Self::Model) -> Result<U, E> {
