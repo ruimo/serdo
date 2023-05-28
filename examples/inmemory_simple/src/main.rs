@@ -18,16 +18,10 @@ impl Cmd for SumCmd {
         }
     }
 
-    fn redo(&mut self, model: &mut Self::Model) -> Result<Self::RedoResp, Self::RedoErr> {
+    fn redo(&self, model: &mut Self::Model) {
         match self {
-            SumCmd::Add(i) => {
-                model.0 += *i;
-                Ok(())
-            },
-            SumCmd::Mul(i) => {
-                model.0 *= *i;
-                Ok(())
-            },
+            SumCmd::Add(i) => model.0 += *i,
+            SumCmd::Mul(i) => model.0 *= *i,
         }
     }
 }
