@@ -24,4 +24,4 @@ jobs:
         git config --global user.name "Shisei Hanai"
         cargo login ${{ secrets.SERDO }}
         git status
-        cargo release -vv --execute --no-confirm --features persistence
+        cargo release -vv --execute release --no-confirm --features persistence
