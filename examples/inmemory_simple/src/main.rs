@@ -26,7 +26,7 @@ impl Cmd for SumCmd {
     }
 }
 
-trait Model {
+trait Model: UndoStore<CmdType = SumCmd, ModelType = Sum> {
     fn add(&mut self, to_add: i32);
     fn mul(&mut self, to_mul: i32);
 }
@@ -47,13 +47,13 @@ enum Resp {
 }
 
 struct App {
-    store: InMemoryUndoStore<SumCmd, Sum>,
+    store: Box<dyn Model>,
 }
 
 impl App {
     fn new(capacity: usize) -> Self {
         Self {
-            store: InMemoryUndoStore::new(capacity),
+            store: Box::new(InMemoryUndoStore::<SumCmd, Sum>::new(capacity)),
         }
     }
 
