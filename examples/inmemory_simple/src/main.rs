@@ -41,41 +41,77 @@ impl Model for InMemoryUndoStore<SumCmd, Sum> {
     }
 }
 
-fn main() {
-    let mut line_buf = String::new();
-    let mut store: InMemoryUndoStore<SumCmd, Sum> = InMemoryUndoStore::new(10);
-    loop {
-        println!("Current sum: {:?}", store.model().0);
-        println!(
-            "Command(+n: add number, *n: multiply number, {}{}q: quit):",
-            if store.can_undo() { "u: undo, " } else { "" },
-            if store.can_redo() { "r: redo, " } else { "" }
-        );
-        io::stdin().read_line(&mut line_buf).unwrap();
-        
-        let cmd = line_buf.trim();
+enum Resp {
+    Cont, Msg(String), Quit,
+}
+
+struct App {
+    store: InMemoryUndoStore<SumCmd, Sum>,
+}
+
+impl App {
+    fn new(capacity: usize) -> Self {
+        Self {
+            store: InMemoryUndoStore::new(capacity),
+        }
+    }
+
+    fn prompt(&self) -> Vec<String> {
+        vec!(
+            format!("Current sum: {:?}", self.store.model().0),
+            format!(
+                "Command(+n: add number, *n: multiply number, {}{}q: quit):",
+                if self.store.can_undo() { "u: undo, " } else { "" },
+                if self.store.can_redo() { "r: redo, " } else { "" }
+            )
+        )
+    }
+
+    fn perform_cmd(&mut self, cmd: &str) -> Resp {
         if cmd.starts_with("+") {
             let num: i32 = cmd[1..].trim().parse().unwrap();
-            store.add(num);
-        } else if line_buf.starts_with("*") {
+            self.store.add(num);
+            Resp::Cont
+        } else if cmd.starts_with("*") {
             let num: i32 = cmd[1..].trim().parse().unwrap();
-            store.mul(num);
+            self.store.mul(num);
+            Resp::Cont
         } else if cmd == "u" {
-            if store.can_undo() {
-                store.undo();
+            if self.store.can_undo() {
+                self.store.undo();
+                Resp::Cont
             } else {
-                println!("Cannot undo now.");
+                Resp::Msg("Cannot undo now.".to_owned())
             }
         } else if cmd == "r" {
-            if store.can_redo() {
-                store.redo();
+            if self.store.can_redo() {
+                self.store.redo();
+                Resp::Cont
             } else {
-                println!("Cannot redo now.");
+                Resp::Msg("Cannot redo now.".to_owned())
             }
         } else if cmd == "q" {
-            break;
+            Resp::Quit
         } else {
-            println!("??? Unknown command '{}'", cmd);
+            Resp::Msg(format!("??? Unknown command '{}'", cmd))
+        }
+
+    }
+}
+
+fn main() {
+    let mut line_buf = String::new();
+    let mut app = App::new(10);
+    loop {
+        for prompt in app.prompt().iter() {
+            println!("{}", prompt);
+        }
+        io::stdin().read_line(&mut line_buf).unwrap();
+        
+        match app.perform_cmd(&line_buf.trim()) {
+            Resp::Cont => {},
+            Resp::Msg(msg) => println!("{}", msg),
+            Resp::Quit => break,
         }
         line_buf.clear();
     }
