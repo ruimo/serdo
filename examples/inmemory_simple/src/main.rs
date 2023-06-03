@@ -41,6 +41,7 @@ impl Model for InMemoryUndoStore<SumCmd, Sum> {
     }
 }
 
+#[derive(Debug, PartialEq)]
 enum Resp {
     Cont, Msg(String), Quit,
 }
@@ -55,6 +56,8 @@ impl App {
             store: InMemoryUndoStore::new(capacity),
         }
     }
+
+    fn sum(&self) -> i32 {self.store.model().0}
 
     fn prompt(&self) -> Vec<String> {
         vec!(
@@ -114,5 +117,55 @@ fn main() {
             Resp::Quit => break,
         }
         line_buf.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{App, Resp};
+
+    #[test]
+    fn initial_prompt() {
+        let app = App::new(10);
+        let prompt: Vec<String> = app.prompt();
+        assert_eq!(prompt.len(), 2);
+        assert_eq!(prompt[0], "Current sum: 0");
+        assert_eq!(prompt[1], "Command(+n: add number, *n: multiply number, q: quit):");
+    }
+
+    #[test]
+    fn add_and_mul() {
+        let mut app = App::new(10);
+        assert_eq!(app.perform_cmd("+3"), Resp::Cont);
+        assert_eq!(app.sum(), 3);
+        assert_eq!(app.perform_cmd("*4"), Resp::Cont);
+        assert_eq!(app.sum(), 12);
+
+        let prompt = app.prompt();
+        assert_eq!(prompt.len(), 2);
+        assert_eq!(prompt[0], "Current sum: 12");
+        assert_eq!(prompt[1], "Command(+n: add number, *n: multiply number, u: undo, q: quit):");
+        assert_eq!(app.perform_cmd("r"), Resp::Msg("Cannot redo now.".to_owned()));
+
+        assert_eq!(app.perform_cmd("u"), Resp::Cont);
+        let prompt = app.prompt();
+        assert_eq!(prompt.len(), 2);
+        assert_eq!(prompt[0], "Current sum: 3");
+        assert_eq!(prompt[1], "Command(+n: add number, *n: multiply number, u: undo, r: redo, q: quit):");
+
+        assert_eq!(app.perform_cmd("r"), Resp::Cont);
+        let prompt = app.prompt();
+        assert_eq!(prompt.len(), 2);
+        assert_eq!(prompt[0], "Current sum: 12");
+        assert_eq!(prompt[1], "Command(+n: add number, *n: multiply number, u: undo, q: quit):");
+
+        assert_eq!(app.perform_cmd("u"), Resp::Cont);
+        assert_eq!(app.perform_cmd("u"), Resp::Cont);
+        let prompt = app.prompt();
+        assert_eq!(prompt.len(), 2);
+        assert_eq!(prompt[0], "Current sum: 0");
+        assert_eq!(prompt[1], "Command(+n: add number, *n: multiply number, r: redo, q: quit):");
+
+        assert_eq!(app.perform_cmd("u"), Resp::Msg("Cannot undo now.".to_owned()));
     }
 }
