@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, borrow::Cow};
 use serdo::{cmd::Cmd, undo_store::{UndoStore, InMemoryUndoStore}};
 
 enum SumCmd {
@@ -26,12 +26,12 @@ impl Cmd for SumCmd {
     }
 }
 
-trait Model: UndoStore<CmdType = SumCmd, ModelType = Sum> {
+trait Model: UndoStore<CmdType = SumCmd, ModelType = Sum, ErrType = ()> {
     fn add(&mut self, to_add: i32);
     fn mul(&mut self, to_mul: i32);
 }
 
-impl Model for InMemoryUndoStore<SumCmd, Sum> {
+impl Model for InMemoryUndoStore<SumCmd, Sum, ()> {
     fn add(&mut self, to_add: i32) {
         self.add_cmd(SumCmd::Add(to_add));
     }
@@ -53,20 +53,20 @@ struct App {
 impl App {
     fn new(capacity: usize) -> Self {
         Self {
-            store: Box::new(InMemoryUndoStore::<SumCmd, Sum>::new(capacity)),
+            store: Box::new(InMemoryUndoStore::<SumCmd, Sum, ()>::new(capacity)),
         }
     }
 
     fn sum(&self) -> i32 {self.store.model().0}
 
-    fn prompt(&self) -> Vec<String> {
+    fn prompt(&self) -> Vec<Cow<str>> {
         vec!(
-            format!("Current sum: {:?}", self.store.model().0),
+            format!("Current sum: {:?}", self.sum()).into(),
             format!(
                 "Command(+n: add number, *n: multiply number, {}{}q: quit):",
                 if self.store.can_undo() { "u: undo, " } else { "" },
                 if self.store.can_redo() { "r: redo, " } else { "" }
-            )
+            ).into()
         )
     }
 
@@ -98,7 +98,6 @@ impl App {
         } else {
             Resp::Msg(format!("??? Unknown command '{}'", cmd))
         }
-
     }
 }
 
@@ -122,12 +121,14 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use crate::{App, Resp};
 
     #[test]
     fn initial_prompt() {
         let app = App::new(10);
-        let prompt: Vec<String> = app.prompt();
+        let prompt: Vec<Cow<str>> = app.prompt();
         assert_eq!(prompt.len(), 2);
         assert_eq!(prompt[0], "Current sum: 0");
         assert_eq!(prompt[1], "Command(+n: add number, *n: multiply number, q: quit):");

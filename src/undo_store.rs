@@ -3,8 +3,10 @@ use crate::cmd::Cmd;
 pub trait UndoStore {
     type ModelType;
     type CmdType: Cmd<Model = Self::ModelType>;
+    type ErrType;
 
     fn model(&self) -> &Self::ModelType;
+    fn mutate(&mut self, f: &mut dyn FnMut(&mut Self::ModelType) -> Result<Self::CmdType, Self::ErrType>) -> Result<(), Self::ErrType>;
     fn add_cmd(&mut self, cmd: Self::CmdType);
     fn can_undo(&self) -> bool;
     fn undo(&mut self);
@@ -18,15 +20,17 @@ pub enum InMemoryStoreErr {
     CannotUndoRedo,
 }
 
-pub struct InMemoryUndoStore<C, M> where M: Default {
+pub struct InMemoryUndoStore<C, M, E> where M: Default {
+    phantom: std::marker::PhantomData<E>,
     model: M,
     store: Vec<C>,
     location: usize,
 }
 
-impl<C, M> InMemoryUndoStore<C, M> where M: Default {
+impl<C, M, E> InMemoryUndoStore<C, M, E> where M: Default {
     pub fn new(capacity: usize) -> Self {
         Self {
+            phantom: std::marker::PhantomData,
             model: M::default(),
             store: Vec::with_capacity(capacity),
             location: 0,
@@ -34,38 +38,11 @@ impl<C, M> InMemoryUndoStore<C, M> where M: Default {
     }
 }
 
-/*
-struct InMemorySnapshotCmd<M> {
-    model_after_redo: M,
-    model_after_undo: M,
-}
-
-impl<M> Cmd for InMemorySnapshotCmd<M> where M: Clone {
-    type Model = M;
-    type RedoResp;
-    type RedoErr;
-
-    fn undo(&self, model: &mut Self::Model) {
-        *model = self.model_after_undo.clone();
-    }
-
-    fn redo(&mut self, model: &mut Self::Model) {
-        *model = self.model_after_redo.clone();
-    }
-}
-*/
-
-impl<C, M> UndoStore for InMemoryUndoStore<C, M>
-    where M: Default + 'static, C: Cmd<Model = M>
-{
-    type ModelType = M;
-    type CmdType = C;
-
-    fn add_cmd(&mut self, cmd: Self::CmdType) {
+impl<C, M, E> InMemoryUndoStore<C, M, E> where M: Default + 'static, C: Cmd<Model = M> {
+    fn post_cmd(&mut self, cmd: C) {
         if self.location < self.store.len() {
             self.store.truncate(self.location);
         }
-        cmd.redo(&mut self.model);
 
         while self.store.capacity() <= self.store.len() {
             self.store.remove(0);
@@ -73,6 +50,30 @@ impl<C, M> UndoStore for InMemoryUndoStore<C, M>
     
         self.store.push(cmd);
         self.location = self.store.len();
+    }
+}
+
+
+impl<C, M, E> UndoStore for InMemoryUndoStore<C, M, E>
+    where M: Default + 'static, C: Cmd<Model = M>
+{
+    type ModelType = M;
+    type CmdType = C;
+    type ErrType = E;
+
+    fn mutate(&mut self, f: &mut dyn FnMut(&mut Self::ModelType) -> Result<Self::CmdType, Self::ErrType>) -> Result<(), Self::ErrType> {
+        let result = f(&mut self.model);
+        if let Ok(cmd) = result {
+            self.post_cmd(cmd);
+            Ok(())
+        } else {
+            result.map(|_| ())
+        }
+    }
+
+    fn add_cmd(&mut self, cmd: Self::CmdType) {
+        cmd.redo(&mut self.model);
+        self.post_cmd(cmd);
     }
 
     #[inline]
@@ -108,8 +109,9 @@ impl<C, M> UndoStore for InMemoryUndoStore<C, M>
 
 #[cfg(feature = "persistence")]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub struct SqliteUndoStore<C, M> where C: crate::cmd::SerializableCmd<Model = M>, M: Default + serde::Serialize + serde::de::DeserializeOwned {
+pub struct SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Model = M>, M: Default + serde::Serialize + serde::de::DeserializeOwned {
     phantom: std::marker::PhantomData<C>,
+    phantome: std::marker::PhantomData<E>,
     base_dir: std::path::PathBuf,
     sqlite_path: std::path::PathBuf,
     conn: rusqlite::Connection,
@@ -145,7 +147,7 @@ pub enum SqliteUndoStoreError {
 
 #[cfg(feature = "persistence")]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-impl<C, M> SqliteUndoStore<C, M> where C: crate::cmd::SerializableCmd<Model = M>, M: Default + serde::Serialize + serde::de::DeserializeOwned {
+impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Model = M>, M: Default + serde::Serialize + serde::de::DeserializeOwned {
     fn lock_file_path(base_dir: &std::path::Path) -> std::path::PathBuf {
         let mut path: std::path::PathBuf = base_dir.to_path_buf();
         path.push("lock");
@@ -200,7 +202,7 @@ impl<C, M> SqliteUndoStore<C, M> where C: crate::cmd::SerializableCmd<Model = M>
             Self::try_lock(dir.as_ref())?;
             Self::open_existing(&sqlite_path)
         } else {
-            std::fs::create_dir(dir.as_ref()).map_err(|e| SqliteUndoStoreError::FileError(dir.as_ref().to_path_buf(), e))?;
+            std::fs::create_dir_all(dir.as_ref()).map_err(|e| SqliteUndoStoreError::FileError(dir.as_ref().to_path_buf(), e))?;
             Self::try_lock(dir.as_ref())?;
             Self::create_new(&sqlite_path)
         }.map_err(|e|
@@ -208,7 +210,7 @@ impl<C, M> SqliteUndoStore<C, M> where C: crate::cmd::SerializableCmd<Model = M>
         )?;
         let mut store = SqliteUndoStore {
             base_dir: dir.as_ref().to_path_buf(), model: M::default(), 
-            cur_cmd_seq_no: 0, phantom: std::marker::PhantomData,
+            cur_cmd_seq_no: 0, phantom: std::marker::PhantomData, phantome: std::marker::PhantomData,
             undo_limit: undo_limit.unwrap_or(100), sqlite_path, conn,
         };
         store.restore_model()?;
@@ -328,8 +330,6 @@ impl<C, M> SqliteUndoStore<C, M> where C: crate::cmd::SerializableCmd<Model = M>
     }
 
     fn _add_cmd(&mut self, cmd: C) -> Result<(), SqliteUndoStoreError> {
-        cmd.redo(&mut self.model);
-
         let serialized: Vec<u8> = bincode::serialize(&cmd).map_err(
             |e| SqliteUndoStoreError::SerializeError(e)
         )?;
@@ -411,7 +411,7 @@ impl<C, M> SqliteUndoStore<C, M> where C: crate::cmd::SerializableCmd<Model = M>
 
 #[cfg(feature = "persistence")]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-impl<C, M> Drop for SqliteUndoStore<C, M> where C: crate::cmd::SerializableCmd<Model=M>, M: Default + serde::Serialize + serde::de::DeserializeOwned {
+impl<C, M, E> Drop for SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Model=M>, M: Default + serde::Serialize + serde::de::DeserializeOwned {
     fn drop(&mut self) {
         let _ = self.unlock();
     }
@@ -420,17 +420,37 @@ impl<C, M> Drop for SqliteUndoStore<C, M> where C: crate::cmd::SerializableCmd<M
 pub const MAX_ROWID: i64 = 9_223_372_036_854_775_807;
 
 #[cfg(feature = "persistence")]
+impl<C, M, E> SqliteUndoStore<C, M, E>
+  where M: Default + serde::Serialize + serde::de::DeserializeOwned + 'static, C: crate::cmd::SerializableCmd<Model = M>
+{
+}
+
+#[cfg(feature = "persistence")]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-impl<C, M> UndoStore for SqliteUndoStore<C, M>
+impl<C, M, E> UndoStore for SqliteUndoStore<C, M, E>
   where M: Default + serde::Serialize + serde::de::DeserializeOwned + 'static, C: crate::cmd::SerializableCmd<Model = M>
 {
     type ModelType = M;
     type CmdType = C;
-//    type StoreErr = SqliteUndoStoreError;
+    type ErrType = E;
 
     fn model(&self) -> &M { &self.model }
 
+    fn mutate(&mut self, f: &mut dyn FnMut(&mut Self::ModelType) -> Result<Self::CmdType, Self::ErrType>) -> Result<(), Self::ErrType> {
+        let result = f(&mut self.model);
+        if let Ok(cmd) = result {
+            if let Err(e) = self._add_cmd(cmd) {
+                panic!("Cannot access database {:?}.", e);
+            }
+            Ok(())
+        } else {
+            result.map(|_| ())
+        }
+    }
+
     fn add_cmd(&mut self, cmd: Self::CmdType) {
+        cmd.redo(&mut self.model);
+
         if let Err(e) = self._add_cmd(cmd) {
             panic!("Cannot access database {:?}.", e);
         }
@@ -503,7 +523,7 @@ mod tests {
         fn sub(&mut self, to_sub: i32) -> Self::Resp;
     }
 
-    impl Model for InMemoryUndoStore<SumCmd, Sum> {
+    impl Model for InMemoryUndoStore<SumCmd, Sum, ()> {
         type Resp = ();
 
         fn add(&mut self, to_add: i32) {
@@ -517,7 +537,7 @@ mod tests {
 
     #[test]
     fn can_undo_in_memory_store() {
-        let mut store: InMemoryUndoStore<SumCmd, Sum> = InMemoryUndoStore::new(3);
+        let mut store: InMemoryUndoStore<SumCmd, Sum, ()> = InMemoryUndoStore::new(3);
         assert_eq!(store.can_undo(), false);
         store.add(3);
         assert_eq!(store.model().0, 3);
@@ -531,7 +551,7 @@ mod tests {
 
     #[test]
     fn can_undo_redo_in_memory_store() {
-        let mut store: InMemoryUndoStore<SumCmd, Sum> = InMemoryUndoStore::new(3);
+        let mut store: InMemoryUndoStore<SumCmd, Sum, ()> = InMemoryUndoStore::new(3);
         assert_eq!(store.can_undo(), false);
         store.add(3);
 
@@ -553,7 +573,7 @@ mod tests {
 
     #[test]
     fn undo_and_add_cmd() {
-        let mut store: InMemoryUndoStore<SumCmd, Sum> = InMemoryUndoStore::new(3);
+        let mut store: InMemoryUndoStore<SumCmd, Sum, ()> = InMemoryUndoStore::new(3);
 
         store.add(3);
         store.add(4);
@@ -577,25 +597,27 @@ mod tests {
         // 3
         assert_eq!(store.model().0, 3);
     }
+}
 
-    #[cfg(feature = "persistence")]
+#[cfg(feature = "persistence")]
+#[cfg(test)]
+mod persistent_tests {
+    use super::{Cmd, UndoStore};
+
     #[derive(serde::Serialize, serde::Deserialize)]
     struct SerSum(i32);
 
-    #[cfg(feature = "persistence")]
     impl Default for SerSum {
         fn default() -> Self {
             Self(0)
         }
     }
 
-    #[cfg(feature = "persistence")]
     #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
     enum SerSumCmd {
         Add(i32), Sub(i32),
     }
 
-    #[cfg(feature = "persistence")]
     impl Cmd for SerSumCmd {
         type Model = SerSum;
 
@@ -614,18 +636,15 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistence")]
     impl crate::cmd::SerializableCmd for SerSumCmd {
     }
 
-    #[cfg(feature = "persistence")]
     trait SerModel {
         fn add(&mut self, to_add: i32) -> Result<(), super::SqliteUndoStoreError>;
         fn sub(&mut self, to_sub: i32) -> Result<(), super::SqliteUndoStoreError>;
     }
 
-    #[cfg(feature = "persistence")]
-    impl SerModel for super::SqliteUndoStore::<SerSumCmd, SerSum> {
+    impl SerModel for super::SqliteUndoStore::<SerSumCmd, SerSum, ()> {
         fn add(&mut self, to_add: i32) -> Result<(), super::SqliteUndoStoreError> {
             self.add_cmd(SerSumCmd::Add(to_add));
             Ok(())
@@ -637,7 +656,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "persistence")]
     #[test]
     fn file_store_can_lock() {
         use tempfile::tempdir;
@@ -645,12 +663,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut dir = dir.as_ref().to_path_buf();
         dir.push("klavier");
-        let store = super::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), None).unwrap();
+        let store = super::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), None).unwrap();
 
-        let store2_err = super::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), None).err().unwrap();
+        let store2_err = super::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), None).err().unwrap();
         match store2_err {
             super::SqliteUndoStoreError::CannotLock(err_dir) => {
-                let lock_file_path = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum>::lock_file_path(&dir);
+                let lock_file_path = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::lock_file_path(&dir);
                 assert_eq!(err_dir.as_path(), lock_file_path);
             },
             _ => {panic!("Test failed. {:?}", store2_err)},
@@ -658,10 +676,9 @@ mod tests {
 
         drop(store);
 
-        let _ = super::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), None).unwrap();
+        let _ = super::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), None).unwrap();
     }
 
-    #[cfg(feature = "persistence")]
     #[test]
     fn can_serialize_cmd() {
         use rusqlite::{Connection, params};
@@ -670,7 +687,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut dir = dir.as_ref().to_path_buf();
         dir.push("klavier");
-        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), None).unwrap();
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), None).unwrap();
 
         store.add(123).unwrap();
         assert_eq!(store.model().0, 123);
@@ -703,7 +720,6 @@ mod tests {
         assert!(rows.next().unwrap().is_none());
     }
 
-    #[cfg(feature = "persistence")]
     #[test]
     fn can_undo_serialize_cmd() {
         use tempfile::tempdir;
@@ -711,7 +727,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut dir = dir.as_ref().to_path_buf();
         dir.push("klavier");
-        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), None).unwrap();
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), None).unwrap();
 
         store.add(123).unwrap();
         assert_eq!(store.model().0, 123);
@@ -732,7 +748,6 @@ mod tests {
         assert_eq!(store.model().0, 123 - 234);
     }
 
-    #[cfg(feature = "persistence")]
     #[test]
     fn file_undo_store_can_serialize() {
         use tempfile::tempdir;
@@ -740,19 +755,18 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut dir = dir.as_ref().to_path_buf();
         dir.push("klavier");
-        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), None).unwrap();
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), None).unwrap();
         store.add(123).unwrap();
         assert_eq!(store.model().0, 123);
 
         drop(store);
         
-        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), None).unwrap();
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), None).unwrap();
         assert_eq!(store.model().0, 123);
         store.undo();
         assert_eq!(store.model().0, 0);
     }
 
-    #[cfg(feature = "persistence")]
     #[test]
     fn file_undo_store_undo_and_add() {
         use tempfile::tempdir;
@@ -760,7 +774,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut dir = dir.as_ref().to_path_buf();
         dir.push("klavier");
-        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), None).unwrap();
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), None).unwrap();
         store.add(1).unwrap();
         store.add(2).unwrap();
         store.add(3).unwrap();
@@ -777,7 +791,6 @@ mod tests {
         assert_eq!(store.model().0, 101);
     }
 
-    #[cfg(feature = "persistence")]
     #[should_panic]
     #[test]
     fn file_undo_store_can_set_limit() {
@@ -786,7 +799,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut dir = dir.as_ref().to_path_buf();
         dir.push("klavier");
-        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), Some(5)).unwrap();
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), Some(5)).unwrap();
         store.add(1).unwrap();
         store.add(2).unwrap();
         store.add(3).unwrap();
@@ -805,7 +818,7 @@ mod tests {
         store.undo();
     }
 
-    #[cfg(feature = "persistence")]
+
     #[test]
     fn file_undo_store_can_set_limit_and_recover() {
         use tempfile::tempdir;
@@ -813,7 +826,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut dir = dir.as_ref().to_path_buf();
         dir.push("klavier");
-        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), Some(5)).unwrap();
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), Some(5)).unwrap();
         store.add(1).unwrap();
         store.add(2).unwrap();
         store.add(3).unwrap();
@@ -823,11 +836,10 @@ mod tests {
         assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 5 + 6);
         drop(store);
 
-        let store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), Some(5)).unwrap();
+        let store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), Some(5)).unwrap();
         assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 5 + 6);
     }
 
-    #[cfg(feature = "persistence")]
     #[test]
     fn file_undo_store_can_restore() {
         use tempfile::tempdir;
@@ -835,7 +847,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut dir = dir.as_ref().to_path_buf();
         dir.push("klavier");
-        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), Some(5)).unwrap();
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), Some(5)).unwrap();
         store.add(1).unwrap();
         store.add(2).unwrap();
         store.add(3).unwrap();
@@ -854,7 +866,7 @@ mod tests {
 
         drop(store);
 
-        let store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum>::open(dir.clone(), Some(5)).unwrap();
+        let store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), Some(5)).unwrap();
         assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 7);
     }
 }
