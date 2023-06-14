@@ -6,7 +6,7 @@ pub trait UndoStore {
     type ErrType;
 
     fn model(&self) -> &Self::ModelType;
-    fn mutate(&mut self, f: &mut dyn FnMut(&mut Self::ModelType) -> Result<Self::CmdType, Self::ErrType>) -> Result<(), Self::ErrType>;
+    fn mutate(&mut self, f: Box<dyn FnOnce(&mut Self::ModelType) -> Result<Self::CmdType, Self::ErrType>>) -> Result<(), Self::ErrType>;
     fn add_cmd(&mut self, cmd: Self::CmdType);
     fn can_undo(&self) -> bool;
     fn undo(&mut self);
@@ -61,7 +61,7 @@ impl<C, M, E> UndoStore for InMemoryUndoStore<C, M, E>
     type CmdType = C;
     type ErrType = E;
 
-    fn mutate(&mut self, f: &mut dyn FnMut(&mut Self::ModelType) -> Result<Self::CmdType, Self::ErrType>) -> Result<(), Self::ErrType> {
+    fn mutate(&mut self, f: Box<dyn FnOnce(&mut Self::ModelType) -> Result<Self::CmdType, Self::ErrType>>) -> Result<(), Self::ErrType> {
         let result = f(&mut self.model);
         if let Ok(cmd) = result {
             self.post_cmd(cmd);
@@ -436,7 +436,7 @@ impl<C, M, E> UndoStore for SqliteUndoStore<C, M, E>
 
     fn model(&self) -> &M { &self.model }
 
-    fn mutate(&mut self, f: &mut dyn FnMut(&mut Self::ModelType) -> Result<Self::CmdType, Self::ErrType>) -> Result<(), Self::ErrType> {
+    fn mutate(&mut self, f: Box<dyn FnOnce(&mut Self::ModelType) -> Result<Self::CmdType, Self::ErrType>>) -> Result<(), Self::ErrType> {
         let result = f(&mut self.model);
         if let Ok(cmd) = result {
             if let Err(e) = self._add_cmd(cmd) {

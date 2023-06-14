@@ -9,7 +9,6 @@ jobs:
     - uses: actions/checkout@v3
       with:
         fetch-depth: 0
-    - uses: actions/checkout@v3
     - name: cargo plugin cache
       id: cargo-plugin-cache
       uses: actions/cache@v2

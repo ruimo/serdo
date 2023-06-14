@@ -56,15 +56,17 @@ impl Model for SqliteUndoStore<EditorCmd, Buffer, UndoStoreErr> {
     }
 
     fn delete_at(&mut self, loc: usize) -> Result<(), UndoStoreErr>{
-        self.mutate(&mut |buf| {
-            let len = buf.0.len();
-            if len <= loc {
-                Err(UndoStoreErr::InvalidIndex { max_index: len - 1 })
-            } else {
-                let deleted = buf.0.remove(loc);
-                Ok(EditorCmd::DeleteAt { loc, deleted })
-            }
-        })
+        self.mutate(
+            Box::new(move |buf| {
+                let len = buf.0.len();
+                if len <= loc {
+                    Err(UndoStoreErr::InvalidIndex { max_index: len - 1 })
+                } else {
+                    let deleted = buf.0.remove(loc);
+                    Ok(EditorCmd::DeleteAt { loc, deleted })
+                }
+            })
+        )
     }
 }
 
