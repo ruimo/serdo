@@ -15,7 +15,7 @@ enum EditorCmd {
 struct Buffer(Vec<String>);
 
 impl Cmd for EditorCmd {
-        type Model = Buffer;
+    type Model = Buffer;
 
     fn undo(&self, model: &mut Self::Model) {
         match self {

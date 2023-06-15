@@ -7,6 +7,7 @@ pub trait UndoStore {
 
     fn model(&self) -> &Self::ModelType;
     fn mutate(&mut self, f: Box<dyn FnOnce(&mut Self::ModelType) -> Result<Self::CmdType, Self::ErrType>>) -> Result<(), Self::ErrType>;
+    fn irreversible_mutate<R>(&mut self, f: Box<dyn FnOnce(&mut Self::ModelType) -> R>) -> R where Self: Sized;
     fn add_cmd(&mut self, cmd: Self::CmdType);
     fn can_undo(&self) -> bool;
     fn undo(&mut self);
@@ -104,6 +105,10 @@ impl<C, M, E> UndoStore for InMemoryUndoStore<C, M, E>
 
     fn model(&self) -> &M {
         &self.model
+    }
+
+    fn irreversible_mutate<R>(&mut self, f: Box<dyn FnOnce(&mut Self::ModelType) -> R>) -> R {
+        f(&mut self.model)
     }
 }
 
@@ -480,6 +485,10 @@ impl<C, M, E> UndoStore for SqliteUndoStore<C, M, E>
         if let Err(e) = self._redo() {
             panic!("Cannot access database {:?}.", e);
         }
+    }
+
+    fn irreversible_mutate<R>(&mut self, f: Box<dyn FnOnce(&mut Self::ModelType) -> R>) -> R {
+        f(&mut self.model)
     }
 }
 #[cfg(test)]
