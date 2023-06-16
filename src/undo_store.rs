@@ -501,8 +501,10 @@ impl<C, M, E> UndoStore for SqliteUndoStore<C, M, E>
     }
 
     fn undo(&mut self) {
-        if let Err(e) = self._undo() {
-            panic!("Cannot access database {:?}.", e);
+        if self.can_undo() {
+            if let Err(e) = self._undo() {
+                panic!("Cannot access database {:?}.", e);
+            }
         }
     }
 
@@ -514,8 +516,10 @@ impl<C, M, E> UndoStore for SqliteUndoStore<C, M, E>
     }
 
     fn redo(&mut self) {
-        if let Err(e) = self._redo() {
-            panic!("Cannot access database {:?}.", e);
+        if self.can_redo() {
+            if let Err(e) = self._redo() {
+                panic!("Cannot access database {:?}.", e);
+            }
         }
     }
 
