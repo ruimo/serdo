@@ -836,7 +836,6 @@ mod persistent_tests {
         assert_eq!(store.model().0, 101);
     }
 
-    #[should_panic]
     #[test]
     fn file_undo_store_can_set_limit() {
         use tempfile::tempdir;
@@ -860,7 +859,8 @@ mod persistent_tests {
         store.undo();
         assert_eq!(store.model().0, 1);
 
-        store.undo();
+        store.undo(); // Just ignored.
+        assert_eq!(store.model().0, 1);
     }
 
 
