@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use crate::cmd::Cmd;
 
 pub trait UndoStore {
@@ -141,8 +143,13 @@ pub enum SqliteUndoStoreError {
     // Undo/Redo
     CannotUndoRedo,
 
+    // Save as
+    CannotCopyStore {
+        from: PathBuf, to: PathBuf, error: std::io::Error
+    },
+
     // Common
-    FileError(std::path::PathBuf, std::io::Error),
+    FileError(PathBuf, std::io::Error),
     NotADirectory,
     CannotLock(std::path::PathBuf),
     CannotDeserialize(Option<std::path::PathBuf>, i64, bincode::Error),
@@ -194,12 +201,15 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
         Ok(())
     }
 
+    pub const SQLITE_FILE_NAME: &'static str = "db.sqlite";
+    pub const DEFAULT_UNDO_LIMIT: usize = 100;
+
     // Open the specified directory or newly create it if that does not exist.
-    pub fn open<P: AsRef<std::path::Path>>(dir: P, undo_limit: Option<usize>) -> Result<Self, SqliteUndoStoreError>
+    pub fn open<P: AsRef<Path>>(dir: P, undo_limit: Option<usize>) -> Result<Self, SqliteUndoStoreError>
         where C: crate::cmd::SerializableCmd<Model = M> + serde::de::DeserializeOwned
     {
         let mut sqlite_path = dir.as_ref().to_path_buf();
-        sqlite_path.push("db.sqlite");
+        sqlite_path.push(Self::SQLITE_FILE_NAME);
         let copy_sqlite_path = sqlite_path.clone();
 
         let conn = if dir.as_ref().exists() {
@@ -218,10 +228,25 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
         let mut store = SqliteUndoStore {
             base_dir: dir.as_ref().to_path_buf(), model: M::default(), 
             cur_cmd_seq_no: 0, phantom: std::marker::PhantomData, phantome: std::marker::PhantomData,
-            undo_limit: undo_limit.unwrap_or(100), sqlite_path, conn,
+            undo_limit: undo_limit.unwrap_or(Self::DEFAULT_UNDO_LIMIT), sqlite_path, conn,
         };
         store.restore_model()?;
         Ok(store)
+    }
+
+    pub fn save_as<P: AsRef<Path>>(&self, save_to: P) -> Result<Self, SqliteUndoStoreError> {
+        let mut to = save_to.as_ref().to_path_buf();
+        to.push(Self::SQLITE_FILE_NAME);
+
+        let mut from = self.base_dir.clone();
+        from.push(Self::SQLITE_FILE_NAME);
+
+        match std::fs::copy(&from, &to) {
+            Ok(_) => Self::open(save_to, Some(self.undo_limit)),
+            Err(error) => Err(
+                SqliteUndoStoreError::CannotCopyStore { from, to, error }
+            )
+        }
     }
 
     #[inline]
@@ -913,6 +938,47 @@ mod persistent_tests {
 
         let store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), Some(5)).unwrap();
         assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 7);
+    }
+
+    #[test]
+    fn can_save_as() {
+        use tempfile::tempdir;
+
+        let from_dir = tempdir().unwrap();
+        let mut from_dir = from_dir.as_ref().to_path_buf();
+        from_dir.push("klavier");
+
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(from_dir.clone(), Some(5)).unwrap();
+        store.add(1).unwrap();
+        store.add(2).unwrap();
+        store.add(3).unwrap();
+        store.add(4).unwrap();
+        store.add(5).unwrap();
+
+        // 2, 3, 4, 5, 6 (1 is deleted since undo limit is 5.)
+        // snapshot of 6 is taken.
+        store.add(6).unwrap();
+
+        let to_dir = tempdir().unwrap();
+        let to_dir = to_dir.as_ref().to_path_buf();
+        
+        let mut saved_store = store.save_as(to_dir).unwrap();
+        drop(store);
+
+        assert_eq!(saved_store.model().0, 1 + 2 + 3 + 4 + 5 + 6);
+        
+        saved_store.undo();
+        assert_eq!(saved_store.model().0, 1 + 2 + 3 + 4 + 5);
+
+        saved_store.redo();
+        assert_eq!(saved_store.model().0, 1 + 2 + 3 + 4 + 5 + 6);
+
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(from_dir.clone(), Some(5)).unwrap();
+        assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 5 + 6);
+        store.undo();
+        assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 5);
+        store.redo();
+        assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 5 + 6);
     }
 
     #[test]
