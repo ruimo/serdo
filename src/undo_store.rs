@@ -368,12 +368,21 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
         Ok(stmt.execute(rusqlite::params![self.undo_limit])?)
     }
 
+    fn get_last_snapshot_id(&self) -> Result<Option<i64>, SqliteUndoStoreError> {
+        let mut stmt = self.db(|| self.conn.prepare(
+            "select max(snapshot_id) from snapshot"
+        ))?;
+        let mut rows = self.db(|| stmt.query([]))?;
+        let row = rows.next().unwrap();
+        Ok(row.unwrap().get(0).unwrap())
+    }
+
     fn trim_snapshots(&self) -> Result<usize, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
-            "delete from snapshot where ?1 < snapshot_id"
+            "delete from snapshot where snapshot_id < (select max(snapshot_id) from snapshot)"
         )?;
 
-        Ok(stmt.execute(rusqlite::params![self.undo_limit])?)
+        Ok(stmt.execute(rusqlite::params![])?)
     }
 
     fn save_snapshot(&self) -> Result<(), SqliteUndoStoreError> {
@@ -401,11 +410,18 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
             return Err(SqliteUndoStoreError::NeedCompaction(self.sqlite_path.clone()));
         }
         self.save_seq_no()?;
-        self.db_exec(|| self.trim_snapshots())?;
         let removed_count = self.db_exec(|| self.trim_undo_records())?;
         if removed_count != 0 {
-            self.save_snapshot()?;
+            match self.get_last_snapshot_id()? {
+                None => self.save_snapshot()?,
+                Some(last_snapshot_id) => {
+                    if last_snapshot_id < self.cur_cmd_seq_no - (self.undo_limit as i64) {
+                        self.save_snapshot()?
+                    }
+                }
+            }
         }
+        self.db_exec(|| self.trim_snapshots())?;
         Ok(())
     }
 
@@ -1107,5 +1123,87 @@ mod persistent_tests {
 
         let store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), Some(5)).unwrap();
         assert_eq!(store.model().0, 6);
+    }
+
+    fn snapshot_ids(conn: &rusqlite::Connection) -> Vec<i64> {
+        let mut stmt = conn.prepare(
+            "select snapshot_id from snapshot order by snapshot_id desc"
+        ).unwrap();
+        let mut rows = stmt.query([]).unwrap();
+
+        let mut ids: Vec<i64> = vec![];
+        loop {
+            let row = rows.next().unwrap();
+            match row {
+                None => break,
+                Some(rec) => ids.push(rec.get(0).unwrap()),
+            }
+        }            
+
+        ids
+    }
+
+    #[test]
+    fn snapshots_are_created() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let mut dir = dir.as_ref().to_path_buf();
+        dir.push("klavier");
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), Some(3)).unwrap();
+        store.add(1).unwrap(); // cmd1
+        store.add(2).unwrap(); // cmd2
+        store.add(3).unwrap(); // cmd3
+
+        // [0] -cmd1(+1)-> [1] -cmd2(+2)-> [3] -cmd3(+3)-> [6]
+        assert_eq!(snapshot_ids(&store.conn).len(), 0);
+
+        // cmd1 should be removed because undo_limit = 3.
+        store.add(4).unwrap();
+        // [1] -cmd2(+2)-> [3] -cmd3(+3)-> [6] -cmd4(+4)-> [10]
+        //                                                 ^ snap(id=4)
+
+        let ids = snapshot_ids(&store.conn);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], 4);
+
+        store.add(5).unwrap();
+        // [3] -cmd3(+3)-> [6] -cmd4(+4)-> [10] -cmd5(+5)-> [15]
+        //                                 ^ snap(id=4)
+        assert_eq!(store.model().0, 15);
+        let ids = snapshot_ids(&store.conn);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], 4);
+
+        store.add(6).unwrap();
+        // [6] -cmd4(+4)-> [10] -cmd5(+5)-> [15] -cmd6(+6)-> [21]
+        //                 ^ snap(id=4)
+        assert_eq!(store.model().0, 21);
+        let ids = snapshot_ids(&store.conn);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], 4);
+
+        store.add(7).unwrap();
+        // [10] -cmd5(+5)-> [15] -cmd6(+6)-> [21] -cmd7(+7)-> [28]
+        // ^ snap(id=4)
+        assert_eq!(store.model().0, 28);
+        let ids = snapshot_ids(&store.conn);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], 4);
+
+        store.add(8).unwrap();
+        // [15] -cmd6(+6)-> [21] -cmd7(+7)-> [28] -cmd8(+8)-> [36]
+        //                                                    ^ snap(id=8)
+        assert_eq!(store.model().0, 36);
+        let ids = snapshot_ids(&store.conn);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(ids[0], 8);
+
+        drop(store);
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), None).unwrap();
+        assert_eq!(store.model().0, 36);
+
+        store.undo();
+        assert_eq!(store.model().0, 28);
     }
 }

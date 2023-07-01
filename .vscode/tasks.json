@@ -1,0 +1,16 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "cargo",
+			"command": "test",
+			"args": ["--no-run", "--all-features"], 
+			"problemMatcher": [
+				"$rustc",
+				"$rust-panic"
+			],
+			"group": "test",
+			"label": "cargo test build"
+		}
+	]
+}
