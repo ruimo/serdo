@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
-
-use crate::cmd::Cmd;
+use std::path::{Path};
+use error_stack::{IntoReport, Result, bail, report};
+use crate::{cmd::Cmd, sqlite_undo_store_error::SqliteUndoStoreError};
 
 pub trait UndoStore {
     type ModelType;
@@ -55,7 +55,6 @@ impl<C, M, E> InMemoryUndoStore<C, M, E> where M: Default + 'static, C: Cmd<Mode
         self.location = self.store.len();
     }
 }
-
 
 impl<C, M, E> UndoStore for InMemoryUndoStore<C, M, E>
     where M: Default + 'static, C: Cmd<Model = M>
@@ -128,37 +127,6 @@ pub struct SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Model =
 }
 
 #[cfg(feature = "persistence")]
-#[derive(Debug)]
-pub enum SqliteUndoStoreError {
-    // Add
-    CannotWriteCmd(std::path::PathBuf, std::io::Error),
-    SerializeError(bincode::Error),
-    NeedCompaction(std::path::PathBuf),
-
-    // Load
-    NotFound(std::path::PathBuf),
-    CannotReadCmd(std::path::PathBuf, std::io::Error),
-    DeserializeError(serde_json::Error),
-
-    // Undo/Redo
-    CannotUndoRedo,
-
-    // Save as
-    CannotCopyStore {
-        from: PathBuf, to: PathBuf, error: std::io::Error
-    },
-
-    // Common
-    FileError(PathBuf, std::io::Error),
-    NotADirectory,
-    CannotLock(std::path::PathBuf),
-    CannotDeserialize(Option<std::path::PathBuf>, i64, bincode::Error),
-    OrphanSnapshot { snapshot_id: i64, command_id: i64 },
-    DbError(std::path::PathBuf, rusqlite::Error),
-    CmdSeqNoInconsistent,
-}
-
-#[cfg(feature = "persistence")]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Model = M>, M: Default + serde::Serialize + serde::de::DeserializeOwned {
     fn lock_file_path(base_dir: &std::path::Path) -> std::path::PathBuf {
@@ -171,7 +139,7 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
         let lock_file_path = Self::lock_file_path(base_dir);
         std::fs::OpenOptions::new().write(true).create_new(true).open(&lock_file_path).map_err(|_|
             SqliteUndoStoreError::CannotLock(lock_file_path)
-        )
+        ).into_report()
     }
 
     fn unlock(&self) -> std::io::Result<()> {
@@ -214,7 +182,7 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
 
         let conn = if dir.as_ref().exists() {
             if ! dir.as_ref().is_dir() {
-                return Err(SqliteUndoStoreError::NotADirectory)
+                return Err(SqliteUndoStoreError::NotADirectory(dir.as_ref().to_owned())).into_report()
             }
             Self::try_lock(dir.as_ref())?;
             Self::open_existing(&sqlite_path)
@@ -223,7 +191,7 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
             Self::try_lock(dir.as_ref())?;
             Self::create_new(&sqlite_path)
         }.map_err(|e|
-            SqliteUndoStoreError::DbError(copy_sqlite_path, e)
+            SqliteUndoStoreError::DbError(copy_sqlite_path, report!(e))
         )?;
         let mut store = SqliteUndoStore {
             base_dir: dir.as_ref().to_path_buf(), model: M::default(), 
@@ -243,47 +211,45 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
 
         match std::fs::copy(&from, &to) {
             Ok(_) => Self::open(save_to, Some(self.undo_limit)),
-            Err(error) => Err(
-                SqliteUndoStoreError::CannotCopyStore { from, to, error }
-            )
+            Err(error) => bail!(SqliteUndoStoreError::CannotCopyStore { from, to, error })
         }
     }
 
     #[inline]
     fn db<F, T>(&self, f: F) -> Result<T, SqliteUndoStoreError> where F: FnOnce() -> Result<T, rusqlite::Error> {
-        f().map_err(|e| SqliteUndoStoreError::DbError(self.sqlite_path.clone(), e))
+        f().map_err(|e| SqliteUndoStoreError::DbError(self.sqlite_path.clone(), e)).into_report()
     }
 
     #[inline]
     fn db_exec<F, T>(&self, f: F) -> Result<T, SqliteUndoStoreError> where F: FnOnce() -> Result<T, rusqlite::Error> {
-        f().map_err(|e| SqliteUndoStoreError::DbError(self.sqlite_path.clone(), e))
+        f().map_err(|e| SqliteUndoStoreError::DbError(self.sqlite_path.clone(), e)).into_report()
     }
 
     #[inline]
     fn db_can_undo<F, T>(&self, f: F) -> Result<T, SqliteUndoStoreError> where F: FnOnce() -> Result<T, rusqlite::Error> {
-        f().map_err(|e| SqliteUndoStoreError::DbError(self.sqlite_path.clone(), e))
+        f().map_err(|e| SqliteUndoStoreError::DbError(self.sqlite_path.clone(), e)).into_report()
     }
 
     #[inline]
     fn db_undo<F, T>(&self, f: F) -> Result<T, SqliteUndoStoreError> where F: FnOnce() -> Result<T, rusqlite::Error> {
-        f().map_err(|e| SqliteUndoStoreError::DbError(self.sqlite_path.clone(), e))
+        f().map_err(|e| SqliteUndoStoreError::DbError(self.sqlite_path.clone(), e)).into_report()
     }
 
     fn get_cur_seq_no(&self) -> Result<i64, SqliteUndoStoreError> {
         let mut stmt = self.db(|| self.conn.prepare(
             "select count(cur_cmd_seq_no), max(cur_cmd_seq_no) from cmd_seq_no"
-        ))?;
-        let mut rows = self.db(|| stmt.query([]))?;
+        ).into_report())?;
+        let mut rows = self.db(|| stmt.query([]).into_report())?;
         
-        let row = self.db(|| rows.next())?.unwrap();
-        let count: i64 = self.db(|| row.get(0))?;
+        let row = self.db(|| rows.next().into_report())?.unwrap();
+        let count: i64 = self.db(|| row.get(0).into_report())?;
         if 1 < count {
-            Err(SqliteUndoStoreError::CmdSeqNoInconsistent)
+            bail!(SqliteUndoStoreError::CmdSeqNoInconsistent)
         } else {
-            let cur_seq: Option<i64> = self.db(|| row.get(1))?;
+            let cur_seq: Option<i64> = self.db(|| row.get(1).into_report())?;
             match cur_seq {
                 None => {
-                    self.db_exec(|| self.conn.execute("insert into cmd_seq_no (cur_cmd_seq_no) values (0)", rusqlite::params![]))?;
+                    self.db_exec(|| self.conn.execute("insert into cmd_seq_no (cur_cmd_seq_no) values (0)", rusqlite::params![]).into_report())?;
                     Ok(0)
                 },
                 Some(seq) => Ok(seq)
@@ -292,24 +258,52 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
     }
 
     fn save_seq_no(&self) -> Result<(), SqliteUndoStoreError> {
-        self.db_exec(|| self.conn.execute("update cmd_seq_no set cur_cmd_seq_no = ?1", rusqlite::params![self.cur_cmd_seq_no])).map(|_| ())
+        self.db_exec(|| self.conn.execute("update cmd_seq_no set cur_cmd_seq_no = ?1", rusqlite::params![self.cur_cmd_seq_no]).into_report()).map(|_| ())
     }
 
-    fn load_last_snapshot(&self, cur_seq_no: i64) -> Result<(i64, M), SqliteUndoStoreError> {
+    fn load_without_snapshot(&self, cur_seq_no: i64) -> Result<M, SqliteUndoStoreError> {
         let mut stmt = self.db(|| self.conn.prepare(
-            "select snapshot_id, serialized from snapshot where snapshot_id <= ?1 order by snapshot_id desc limit 1"
-        ))?;
-        let mut rows = self.db(|| stmt.query([cur_seq_no]))?;
+            "select rowid, serialized from command where rowid <= ?1"
+        ).into_report())?;
+        let mut rows = self.db(|| stmt.query([cur_seq_no]).into_report())?;
 
-        if let Some(row) = self.db(|| rows.next())? {
-            let id: i64 = self.db(|| row.get(0))?;
-            let serialized: Vec<u8> = self.db(|| row.get(1))?;
-            let snapshot: M = bincode::deserialize(&serialized).map_err(|e|
-                SqliteUndoStoreError::CannotDeserialize(None, id, e)
+        let mut cmd_id = 1;
+        let mut model = M::default();
+        while let Some(row) = self.db(|| rows.next().into_report())? {
+            let id: i64 = self.db(|| row.get(0).into_report())?;
+            if id != cmd_id {
+                return Err(report!(SqliteUndoStoreError::CannotRestoreModel { snapshot_id: None, not_foud_cmd_id: cmd_id }))
+            }
+            cmd_id += 1;
+            
+            let serialized: Vec<u8> = self.db(|| row.get(1).into_report())?;
+            let cmd: C = bincode::deserialize(&serialized).map_err(|ser_err|
+                SqliteUndoStoreError::CannotDeserialize { path: None, id, ser_err }
             )?;
-            Ok((id, snapshot))
+            cmd.redo(&mut model);
+        }
+        Ok(model)
+    }
+
+    fn load_last_snapshot(&self) -> Result<Option<(i64, M)>, SqliteUndoStoreError> {
+        let mut stmt = self.db(|| self.conn.prepare(
+            "select snapshot_id, serialized from snapshot
+                  where
+                    snapshot_id >= (select min(rowid) from command) -1
+                    and snapshot_id <= (select max(rowid) from command)
+                  order by snapshot_id desc limit 1"
+        ).into_report())?;
+        let mut rows = self.db(|| stmt.query([]).into_report())?;
+
+        if let Some(row) = self.db(|| rows.next().into_report())? {
+            let id: i64 = self.db(|| row.get(0).into_report())?;
+            let serialized: Vec<u8> = self.db(|| row.get(1).into_report())?;
+            let snapshot: M = bincode::deserialize(&serialized).map_err(|ser_err|
+                SqliteUndoStoreError::CannotDeserialize { path: None, id, ser_err }
+            )?;
+            Ok(Some((id, snapshot)))
         } else {
-            Ok((0, M::default()))
+            Ok(None)
         }
     }
 
@@ -317,45 +311,74 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
         where C: crate::cmd::SerializableCmd<Model = M> + serde::de::DeserializeOwned
     {
         let cur_seq_no = self.get_cur_seq_no()?;
-
-        let (mut last_id, mut model) = self.load_last_snapshot(cur_seq_no)?;
-        let mut stmt = self.db(|| self.conn.prepare(
-            "select rowid, serialized from command as cmd where ?1 < rowid and rowid <= ?2 order by rowid"
-        ))?;
-        let mut rows = self.db(|| stmt.query([last_id, cur_seq_no]))?;
-
-        if let Some(first_row) = self.db(|| rows.next())? {
-            let id: i64 = self.db(|| first_row.get(0))?;
-
-            if id != last_id + 1 {
-                return Err(SqliteUndoStoreError::OrphanSnapshot {
-                    snapshot_id: last_id, command_id: id,
-                })
-            }
-
-            let serialized: Vec<u8> = self.db(|| first_row.get(1))?;
-            let cmd: C = bincode::deserialize(&serialized).map_err(|e|
-                SqliteUndoStoreError::CannotDeserialize(None, id, e)
-            )?;
-
-            cmd.redo(&mut model);
-            last_id = id;
+        if cur_seq_no == 0 {
+            self.model = M::default();
+            self.cur_cmd_seq_no = 0;
+            return Ok(())
         }
 
-        while let Some(row) = self.db(|| rows.next())? {
-            let id: i64 = self.db(|| row.get(0))?;
-            let serialized: Vec<u8> = self.db(|| row.get(1))?;
-            let cmd: C = bincode::deserialize(&serialized).map_err(|e|
-                SqliteUndoStoreError::CannotDeserialize(None, id, e)
-            )?;
+        match self.load_last_snapshot()? {
+            Some((last_snapshot_id, mut model)) => {
+                // Restore with snapshot.
+                if cur_seq_no < last_snapshot_id {
+                    let mut stmt = self.db(|| self.conn.prepare(
+                        "select rowid, serialized from command where ?1 < rowid and rowid <= ?2 order by rowid desc"
+                    ).into_report())?;
+                    let mut rows = self.db(|| stmt.query([cur_seq_no, last_snapshot_id]).into_report())?;
+                    
+                    let mut cmd_id = last_snapshot_id;
+                    while let Some(row) = self.db(|| rows.next().into_report())? {
+                        let id: i64 = self.db(|| row.get(0).into_report())?;
+                        if id != cmd_id {
+                            return Err(report!(SqliteUndoStoreError::CannotRestoreModel {
+                                snapshot_id: Some(last_snapshot_id), not_foud_cmd_id: cmd_id 
+                            }))
+                        }
+                        cmd_id -= 1;
+                        
+                        let serialized: Vec<u8> = self.db(|| row.get(1).into_report())?;
+                        let cmd: C = bincode::deserialize(&serialized).map_err(|ser_err|
+                            SqliteUndoStoreError::CannotDeserialize { path: None, id, ser_err }
+                        )?;
+                        cmd.undo(&mut model);
+                    }
+                } else if last_snapshot_id < cur_seq_no {
+                    let mut stmt = self.db(|| self.conn.prepare(
+                        "select rowid, serialized from command where ?1 < rowid and rowid <= ?2 order by rowid asc"
+                    ).into_report())?;
+                    let mut rows = self.db(|| stmt.query([last_snapshot_id, cur_seq_no]).into_report())?;
+                    
+                    let mut cmd_id = last_snapshot_id + 1;
+                    while let Some(row) = self.db(|| rows.next().into_report())? {
+                        let id: i64 = self.db(|| row.get(0).into_report())?;
+                        if id != cmd_id {
+                            return Err(report!(SqliteUndoStoreError::CannotRestoreModel {
+                                snapshot_id: Some(last_snapshot_id), not_foud_cmd_id: cmd_id
+                            }))
+                        }
+                        cmd_id += 1;
+                        
+                        let serialized: Vec<u8> = self.db(|| row.get(1).into_report())?;
+                        let cmd: C = bincode::deserialize(&serialized).map_err(|ser_err|
+                            SqliteUndoStoreError::CannotDeserialize { path: None, id, ser_err }
+                        )?;
+                        cmd.redo(&mut model);
+                    }
+                }
 
-            cmd.redo(&mut model);
-            last_id = id;
+                self.model = model;
+                self.cur_cmd_seq_no = cur_seq_no;
+
+                Ok(())
+            },
+            None => {
+                // Restore without snapshot.
+                self.model = self.load_without_snapshot(cur_seq_no)?;
+                self.cur_cmd_seq_no = cur_seq_no;
+
+                Ok(())
+            },
         }
-        self.model = model;
-        self.cur_cmd_seq_no = last_id;
-
-        Ok(())
     }
 
     fn trim_undo_records(&self) -> Result<usize, rusqlite::Error> {
@@ -371,8 +394,8 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
     fn get_last_snapshot_id(&self) -> Result<Option<i64>, SqliteUndoStoreError> {
         let mut stmt = self.db(|| self.conn.prepare(
             "select max(snapshot_id) from snapshot"
-        ))?;
-        let mut rows = self.db(|| stmt.query([]))?;
+        ).into_report())?;
+        let mut rows = self.db(|| stmt.query([]).into_report())?;
         let row = rows.next().unwrap();
         Ok(row.unwrap().get(0).unwrap())
     }
@@ -388,11 +411,11 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
     fn save_snapshot(&self) -> Result<(), SqliteUndoStoreError> {
         let mut stmt = self.db_exec(|| self.conn.prepare(
             "insert into snapshot (snapshot_id, serialized) values (?1, ?2)"
-        ))?;
+        ).into_report())?;
         let serialized = bincode::serialize(&self.model).map_err(|e|
             SqliteUndoStoreError::SerializeError(e)
         )?;
-        self.db_exec(|| stmt.execute(rusqlite::params![self.cur_cmd_seq_no, serialized]))?;
+        self.db_exec(|| stmt.execute(rusqlite::params![self.cur_cmd_seq_no, serialized]).into_report())?;
 
         Ok(())
     }
@@ -401,13 +424,18 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
         let serialized: Vec<u8> = bincode::serialize(&cmd).map_err(
             |e| SqliteUndoStoreError::SerializeError(e)
         )?;
+
+        let delete_count = self.db_exec(|| self.conn.execute(
+            "delete from command where ?1 < rowid", rusqlite::params![self.cur_cmd_seq_no]
+        ).into_report())?;
+
         self.db_exec(|| self.conn.execute(
-            "insert into command (serialized) values (?1) ", rusqlite::params![serialized])
-        )?;
+            "insert into command (serialized) values (?1)", rusqlite::params![serialized]
+        ).into_report())?;
 
         self.cur_cmd_seq_no = self.conn.last_insert_rowid();
         if self.cur_cmd_seq_no == MAX_ROWID {
-            return Err(SqliteUndoStoreError::NeedCompaction(self.sqlite_path.clone()));
+            return Err(report!(SqliteUndoStoreError::NeedCompaction(self.sqlite_path.clone())));
         }
         self.save_seq_no()?;
         let removed_count = self.db_exec(|| self.trim_undo_records())?;
@@ -421,60 +449,67 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
                 }
             }
         }
-        self.db_exec(|| self.trim_snapshots())?;
+
+        if delete_count != 0 {
+            self.db_exec(|| self.conn.execute("delete from snapshot", rusqlite::params![]).into_report())?;
+            self.save_snapshot()?;
+        } else {
+            self.db_exec(|| self.trim_snapshots())?;
+        }
+
         Ok(())
     }
 
     fn _can_undo(&self) -> Result<bool, SqliteUndoStoreError> {
         let mut stmt = self.db_can_undo(|| self.conn.prepare(
             "select 1 from command where rowid <= ?1"
-        ))?;
-        let mut rows = self.db_can_undo(|| stmt.query(rusqlite::params![self.cur_cmd_seq_no]))?;
-        let row = self.db_can_undo(|| rows.next())?;
+        ).into_report())?;
+        let mut rows = self.db_can_undo(|| stmt.query(rusqlite::params![self.cur_cmd_seq_no]).into_report())?;
+        let row = self.db_can_undo(|| rows.next().into_report())?;
         Ok(row.is_some())
     }
 
     fn _undo(&mut self) -> Result<(), SqliteUndoStoreError> {
         let mut stmt = self.db_undo(|| self.conn.prepare(
             "select serialized from command where rowid = ?1"
-        ))?;
-        let mut rows = self.db_undo(|| stmt.query(rusqlite::params![self.cur_cmd_seq_no]))?;
-        if let Some(row) = self.db_undo(|| rows.next())? {
-            let serialized: Vec<u8> = self.db_undo(|| row.get(0))?;
-            let cmd: C = bincode::deserialize(&serialized).map_err(|e|
-                SqliteUndoStoreError::CannotDeserialize(
-                    Some(self.sqlite_path.clone()), self.cur_cmd_seq_no, e
-                )
+        ).into_report())?;
+        let mut rows = self.db_undo(|| stmt.query(rusqlite::params![self.cur_cmd_seq_no]).into_report())?;
+        if let Some(row) = self.db_undo(|| rows.next().into_report())? {
+            let serialized: Vec<u8> = self.db_undo(|| row.get(0).into_report())?;
+            let cmd: C = bincode::deserialize(&serialized).map_err(|ser_err|
+                SqliteUndoStoreError::CannotDeserialize {
+                    path: Some(self.sqlite_path.clone()), id: self.cur_cmd_seq_no, ser_err
+                }
             )?;
             let res = cmd.undo(&mut self.model);
             self.cur_cmd_seq_no -= 1;
             self.save_seq_no()?;
             Ok(res)
         } else {
-            Err(SqliteUndoStoreError::CannotUndoRedo)
+            bail!(SqliteUndoStoreError::CannotUndoRedo)
         }
     }
 
     fn _can_redo(&self) -> Result<bool, SqliteUndoStoreError> {
         let mut stmt = self.db_can_undo(|| self.conn.prepare(
             "select 1 from command where ?1 < rowid"
-        ))?;
-        let mut rows = self.db_can_undo(|| stmt.query(rusqlite::params![self.cur_cmd_seq_no]))?;
-        let row = self.db_can_undo(|| rows.next())?;
+        ).into_report())?;
+        let mut rows = self.db_can_undo(|| stmt.query(rusqlite::params![self.cur_cmd_seq_no]).into_report())?;
+        let row = self.db_can_undo(|| rows.next().into_report())?;
         Ok(row.is_some())
     }
 
     fn _redo(&mut self) -> Result<(), SqliteUndoStoreError> {
         let mut  stmt = self.db_undo(|| self.conn.prepare(
             "select serialized from command where rowid = ?1"
-        ))?;
-        let mut rows = self.db_undo(|| stmt.query(rusqlite::params![self.cur_cmd_seq_no + 1]))?;
-        if let Some(row) = self.db_undo(|| rows.next())? {
-            let serialized: Vec<u8> = self.db_undo(|| row.get(0))?;
-            let cmd: C = bincode::deserialize(&serialized).map_err(|e|
-                SqliteUndoStoreError::CannotDeserialize(
-                    Some(self.sqlite_path.clone()), self.cur_cmd_seq_no, e
-                )
+        ).into_report())?;
+        let mut rows = self.db_undo(|| stmt.query(rusqlite::params![self.cur_cmd_seq_no + 1]).into_report())?;
+        if let Some(row) = self.db_undo(|| rows.next().into_report())? {
+            let serialized: Vec<u8> = self.db_undo(|| row.get(0).into_report())?;
+            let cmd: C = bincode::deserialize(&serialized).map_err(|ser_err|
+                SqliteUndoStoreError::CannotDeserialize {
+                    path: Some(self.sqlite_path.clone()), id: self.cur_cmd_seq_no, ser_err
+                }
             )?;
 
             cmd.redo(&mut self.model);
@@ -482,7 +517,7 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
             self.save_seq_no()?;
             Ok(())
         } else {
-            Err(SqliteUndoStoreError::CannotUndoRedo)
+            bail!(SqliteUndoStoreError::CannotUndoRedo)
         }
     }
 }
@@ -688,6 +723,7 @@ mod tests {
 #[cfg(feature = "persistence")]
 #[cfg(test)]
 mod persistent_tests {
+    use error_stack::{Result};
     use super::{Cmd, UndoStore};
 
     #[derive(serde::Serialize, serde::Deserialize)]
@@ -752,7 +788,7 @@ mod persistent_tests {
         let store = super::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), None).unwrap();
 
         let store2_err = super::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), None).err().unwrap();
-        match store2_err {
+        match store2_err.downcast_ref::<super::SqliteUndoStoreError>().unwrap() {
             super::SqliteUndoStoreError::CannotLock(err_dir) => {
                 let lock_file_path = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::lock_file_path(&dir);
                 assert_eq!(err_dir.as_path(), lock_file_path);
@@ -938,17 +974,51 @@ mod persistent_tests {
         store.add(2).unwrap();
         store.add(3).unwrap();
         store.add(4).unwrap();
+        assert_eq!(cmd_ids(&store.conn), [1, 2, 3, 4]);
+
         store.add(5).unwrap();
+        assert_eq!(cmd_ids(&store.conn), [1, 2, 3, 4, 5]);
 
         // 2, 3, 4, 5, 6 (1 is deleted since undo limit is 5.)
         // snapshot of 6 is taken.
         store.add(6).unwrap();
+        assert_eq!(cmd_ids(&store.conn), [2, 3, 4, 5, 6]);
 
-        store.undo(); // 2, 3, 4, 5
-        store.undo(); // 2, 3, 4
+        // [1] -cmd2(+2)-> [3] -cmd3(+3)-> [6] -cmd4(+4)-> [10] -cmd5(+5)-> [15] -cmd6(+6)-> [21]
+        //                                                                                   ^ snapshot(id=6)
+        assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 5 + 6);
+        assert_eq!(snapshot_ids(&store.conn), [6]);
+
+        drop(store);
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), Some(5)).unwrap();
+        assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 5 + 6);
+        assert_eq!(snapshot_ids(&store.conn), [6]);
+
+        store.undo();
+        // [1] -cmd2(+2)-> [3] -cmd3(+3)-> [6] -cmd4(+4)-> [10] -cmd5(+5)-> [15] -cmd6(+6)-> [21]
+        //                                                                  ^ current        ^ snapshot(id=6)
+        assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 5);
+        assert_eq!(snapshot_ids(&store.conn), [6]);
+
+        drop(store);
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), Some(5)).unwrap();
+        assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 5);
+
+        store.undo();
+        // [1] -cmd2(+2)-> [3] -cmd3(+3)-> [6] -cmd4(+4)-> [10] -cmd5(+5)-> [15] -cmd6(+6)-> [21]
+        //                                                 ^ current                         ^ snapshot(id=6)
         assert_eq!(store.model().0, 1 + 2 + 3 + 4);
+
+        drop(store);
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), Some(5)).unwrap();
+        assert_eq!(store.model().0, 1 + 2 + 3 + 4);
+
         store.add(7).unwrap();
+        // [1] -cmd2(+2)-> [3] -cmd3(+3)-> [6] -cmd4(+4)-> [10] -cmd5(+7)-> [15]
+        //                                                                  ^ snapshot(id=5)
         assert_eq!(store.model().0, 1 + 2 + 3 + 4 + 7);
+        assert_eq!(cmd_ids(&store.conn), [2, 3, 4, 5]);
+        assert_eq!(snapshot_ids(&store.conn), [5]);
 
         drop(store);
 
@@ -1098,8 +1168,11 @@ mod persistent_tests {
         let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), Some(5)).unwrap();
         store.add(1).unwrap();
         store.add(2).unwrap();
+        assert_eq!(cmd_ids(&store.conn), [1, 2]);
+        assert_eq!(snapshot_ids(&store.conn), Vec::new() as Vec<i64>);
 
         store.save_snapshot().unwrap();
+        assert_eq!(snapshot_ids(&store.conn), [2]);
         //     Snapshot
         // +1, +2
         //      ^cur_seq_no
@@ -1118,16 +1191,36 @@ mod persistent_tests {
         //          ^cur_seq_no
 
         assert_eq!(store.model().0, 6);
+        assert_eq!(cmd_ids(&store.conn), [1, 2, 3, 4]);
 
         drop(store);
 
         let store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(dir.clone(), Some(5)).unwrap();
+        assert_eq!(cmd_ids(&store.conn), [1, 2, 3, 4]);
         assert_eq!(store.model().0, 6);
     }
 
     fn snapshot_ids(conn: &rusqlite::Connection) -> Vec<i64> {
         let mut stmt = conn.prepare(
-            "select snapshot_id from snapshot order by snapshot_id desc"
+            "select snapshot_id from snapshot order by snapshot_id asc"
+        ).unwrap();
+        let mut rows = stmt.query([]).unwrap();
+
+        let mut ids: Vec<i64> = vec![];
+        loop {
+            let row = rows.next().unwrap();
+            match row {
+                None => break,
+                Some(rec) => ids.push(rec.get(0).unwrap()),
+            }
+        }            
+
+        ids
+    }
+
+    fn cmd_ids(conn: &rusqlite::Connection) -> Vec<i64> {
+        let mut stmt = conn.prepare(
+            "select rowid from command order by rowid asc"
         ).unwrap();
         let mut rows = stmt.query([]).unwrap();
 

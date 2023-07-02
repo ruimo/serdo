@@ -18,6 +18,7 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 bincode = { version = "1", optional = true }
 rusqlite = { version = "0", features = ["bundled"], optional = true }
+error-stack = "0.3"
 
 [dev-dependencies]
 tempfile = "3.3.0"
