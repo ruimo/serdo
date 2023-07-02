@@ -1,6 +1,12 @@
-use std::path::{Path};
-use error_stack::{IntoReport, Result, bail, report};
-use crate::{cmd::Cmd, sqlite_undo_store_error::SqliteUndoStoreError};
+use crate::{cmd::Cmd};
+
+cfg_if::cfg_if! {
+    if #[cfg(feature = "persistence")] {
+        use crate::sqlite_undo_store_error::SqliteUndoStoreError;
+        use std::path::{Path};
+        use error_stack::{IntoReport, Result, bail, report};
+    }
+}
 
 pub trait UndoStore {
     type ModelType;

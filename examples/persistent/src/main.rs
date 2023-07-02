@@ -1,5 +1,6 @@
 use std::{io, env, borrow::Cow};
 use serdo::{cmd::{Cmd, SerializableCmd}, undo_store::{UndoStore, SqliteUndoStore}};
+use error_stack::{Result, report, Context};
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
 enum EditorCmd {
@@ -45,6 +46,16 @@ enum UndoStoreErr {
     InvalidIndex { max_index: usize },
 }
 
+impl std::fmt::Display for UndoStoreErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UndoStoreErr::InvalidIndex { max_index } => write!(f, "Invalid index {}", max_index),
+        }
+    }
+}
+
+impl Context for UndoStoreErr {}
+
 trait Model: UndoStore {
     fn append(&mut self, txt: String);
     fn delete_at(&mut self, loc: usize) -> Result<(), UndoStoreErr>;
@@ -55,12 +66,12 @@ impl Model for SqliteUndoStore<EditorCmd, Buffer, UndoStoreErr> {
         self.add_cmd(EditorCmd::Append(txt));
     }
 
-    fn delete_at(&mut self, loc: usize) -> Result<(), UndoStoreErr>{
+    fn delete_at(&mut self, loc: usize) -> Result<(), UndoStoreErr> {
         self.mutate(
             Box::new(move |buf| {
                 let len = buf.0.len();
                 if len <= loc {
-                    Err(UndoStoreErr::InvalidIndex { max_index: len - 1 })
+                    Err(report!(UndoStoreErr::InvalidIndex { max_index: len - 1 }))
                 } else {
                     let deleted = buf.0.remove(loc);
                     Ok(EditorCmd::DeleteAt { loc, deleted })
@@ -112,10 +123,10 @@ impl App {
         } else if cmd.starts_with("-") {
             let loc: usize = cmd[1..].trim().parse().unwrap();
             match self.store.delete_at(loc) {
-                Err(UndoStoreErr::InvalidIndex { max_index }) =>
-                    Resp::Msg(format!("Invalid index max: {}", max_index)),
-                Err(e) =>
-                    panic!("Unexpected error. {:?}", e),
+                Err(err) => {
+                    let UndoStoreErr::InvalidIndex { max_index } = err.downcast_ref::<UndoStoreErr>().unwrap();
+                    Resp::Msg(format!("Invalid index max: {}", max_index))
+                },
                 Ok(()) => Resp::Cont,
             }
         } else if cmd == "u" {

@@ -1,6 +1,9 @@
-use std::{path::PathBuf};
-
-use error_stack::{Report, Context};
+cfg_if::cfg_if! {
+    if #[cfg(feature = "persistence")] {
+        use std::{path::PathBuf};
+        use error_stack::{Report, Context};
+    }
+}
 
 #[cfg(feature = "persistence")]
 #[derive(Debug)]
@@ -38,6 +41,7 @@ pub enum SqliteUndoStoreError {
     CmdSeqNoInconsistent,
 }
 
+#[cfg(feature = "persistence")]
 impl std::fmt::Display for SqliteUndoStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -76,27 +80,5 @@ impl std::fmt::Display for SqliteUndoStoreError {
     }
 }
 
-// impl error::Error for SqliteUndoStoreError {
-//     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-//         match self {
-//             SqliteUndoStoreError::CannotWriteCmd(_, io_err) => Some(io_err),
-//             SqliteUndoStoreError::SerializeError(ser_err) => Some(ser_err),
-//             SqliteUndoStoreError::NeedCompaction(_) => None,
-//             SqliteUndoStoreError::NotFound(_) => None,
-//             SqliteUndoStoreError::CannotReadCmd(_, io_err) => Some(io_err),
-//             SqliteUndoStoreError::DeserializeError(ser_err) => Some(ser_err),
-//             SqliteUndoStoreError::CannotUndoRedo => None,
-//             SqliteUndoStoreError::CannotCopyStore { from: _, to: _, error } => Some(error),
-//             SqliteUndoStoreError::FileError(_, io_err) => Some(io_err),
-//             SqliteUndoStoreError::NotADirectory(_) => None,
-//             SqliteUndoStoreError::CannotLock(_) => None,
-//             SqliteUndoStoreError::CannotDeserialize { path: _, id: _, ser_err } => Some(ser_err),
-//             SqliteUndoStoreError::OrphanSnapshot(_) => None,
-//             SqliteUndoStoreError::DbError(_, db_err) => Some(db_err),
-//             SqliteUndoStoreError::CmdSeqNoInconsistent => None,
-//             SqliteUndoStoreError::CannotRestoreModel { snapshot_id: _, not_foud_cmd_id: _ } => None,
-//         }
-//     }
-// }
-
+#[cfg(feature = "persistence")]
 impl Context for SqliteUndoStoreError {}
