@@ -63,7 +63,7 @@ impl std::fmt::Display for SqliteUndoStoreError {
                     write!(f, "d: {:?}: {:?}", id, ser_err)
                 ),
             SqliteUndoStoreError::OrphanSnapshot(path) => write!(f, "Orphan snapshot {:?}.", path),
-            SqliteUndoStoreError::DbError(path, db_err) => write!(f, "Databse error {:?}: {:?}", path, db_err),
+            SqliteUndoStoreError::DbError(path, db_err) => write!(f, "Database error {:?}: {:?}", path, db_err),
             SqliteUndoStoreError::CmdSeqNoInconsistent => write!(f, "Command sequence number inconsistent."),
             SqliteUndoStoreError::CannotRestoreModel { snapshot_id, not_foud_cmd_id } => {
                 write!(f, "Cannot restore model. ").and_then(|_| 

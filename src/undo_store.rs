@@ -135,6 +135,10 @@ pub struct SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Model =
 #[cfg(feature = "persistence")]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Model = M>, M: Default + serde::Serialize + serde::de::DeserializeOwned {
+    pub fn dir(&self) -> &std::path::PathBuf {
+        &self.base_dir
+    }
+
     fn lock_file_path(base_dir: &std::path::Path) -> std::path::PathBuf {
         let mut path: std::path::PathBuf = base_dir.to_path_buf();
         path.push("lock");
