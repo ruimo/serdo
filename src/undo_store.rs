@@ -1131,7 +1131,9 @@ mod persistent_tests {
         let to_dir = tempdir().unwrap();
         let to_dir = to_dir.as_ref().to_path_buf();
         
-        store.save_as(to_dir).unwrap();
+        store.save_as(to_dir.clone()).unwrap();
+        drop(store);
+        let mut store = crate::undo_store::SqliteUndoStore::<SerSumCmd, SerSum, ()>::open(to_dir.clone(), undo_store::Options::new().with_undo_limit(5)).unwrap();
 
         assert_eq!(store.model().value(), 1 + 2 + 3 + 4 + 5 + 6);
         

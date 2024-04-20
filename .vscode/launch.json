@@ -8,8 +8,8 @@
             "name": "Run Test Debugger",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/target/debug/deps/serdo-cca744b81bd00bcf",
-            "args": ["can_restore_undo_point_pattern3"],
+            "program": "${workspaceFolder}/target/debug/deps/serdo-208e246f2ca5899c",
+            "args": ["can_save_as"],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "cargo test build",
             "env": {
