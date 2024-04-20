@@ -1,5 +1,5 @@
 use std::{io, env, borrow::Cow};
-use serdo::{cmd::{Cmd, SerializableCmd}, undo_store::{UndoStore, SqliteUndoStore}};
+use serdo::{cmd::{Cmd, SerializableCmd}, undo_store::{Options, SqliteUndoStore, UndoStore}};
 use error_stack::{Result, report, Context};
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
@@ -92,8 +92,12 @@ struct App {
 
 impl App {
     fn new<P: AsRef<std::path::Path>>(dir: P, undo_limit: Option<usize>) -> Self {
+        let mut options = Options::new();
+        if let Some(limit) = undo_limit {
+            options = options.with_undo_limit(limit);
+        }
         Self {
-            store: Box::new(SqliteUndoStore::<EditorCmd, Buffer, UndoStoreErr>::open(dir, undo_limit).unwrap()),
+            store: Box::new(SqliteUndoStore::<EditorCmd, Buffer, UndoStoreErr>::open(dir, options).unwrap()),
         }
     }
 

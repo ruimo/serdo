@@ -34,7 +34,8 @@ pub enum SqliteUndoStoreError {
     // Common
     FileError(PathBuf, std::io::Error),
     NotADirectory(PathBuf),
-    CannotLock(std::path::PathBuf),
+    CannotLock { path: std::path::PathBuf, error: std::io::Error },
+    CannotUnlock { path: std::path::PathBuf, error: std::io::Error },
     CannotDeserialize { path: Option<std::path::PathBuf>, id: i64, ser_err: bincode::Error },
     OrphanSnapshot(PathBuf),
     DbError(std::path::PathBuf, Report<rusqlite::Error>),
@@ -55,7 +56,8 @@ impl std::fmt::Display for SqliteUndoStoreError {
             SqliteUndoStoreError::CannotCopyStore { from, to, error } => write!(f, "Cannot copy store from {:?} to {:?}: {:?}", from, to, error),
             SqliteUndoStoreError::FileError(path, io_err) => write!(f, "File access error {:?}: {:?}", path, io_err),
             SqliteUndoStoreError::NotADirectory(path) => write!(f, "Specified path is not a directory: {:?}.", path),
-            SqliteUndoStoreError::CannotLock(path) => write!(f, "Cannot lock: {:?}.", path),
+            SqliteUndoStoreError::CannotLock { path, error } => write!(f, "Cannot lock: {:?}: {:?}.", path, error),
+            SqliteUndoStoreError::CannotUnlock { path, error } => write!(f, "Cannot unlock: {:?}: {:?}.", path, error),
             SqliteUndoStoreError::CannotDeserialize { path, id, ser_err } =>
                 write!(f, "Cannot deserialize ").and_then(|_| 
                    if let Some(p) = path { write!(f, "{:?}, ", p) } else { Ok(()) }
