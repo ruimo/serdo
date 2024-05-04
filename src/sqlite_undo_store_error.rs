@@ -36,10 +36,18 @@ pub enum SqliteUndoStoreError {
     NotADirectory(PathBuf),
     CannotLock { path: std::path::PathBuf, error: std::io::Error },
     CannotUnlock { path: std::path::PathBuf, error: std::io::Error },
-    CannotDeserialize { path: Option<std::path::PathBuf>, id: i64, ser_err: bincode::Error },
+    CannotDeserialize { path: Option<std::path::PathBuf>, seq_no: i64, ser_err: bincode::Error },
     OrphanSnapshot(PathBuf),
     DbError(std::path::PathBuf, Report<rusqlite::Error>),
-    CmdSeqNoInconsistent,
+    NotOpend,
+    CmdSequenceError,
+}
+
+#[cfg(feature = "persistence")]
+impl From<bincode::Error> for SqliteUndoStoreError {
+    fn from(err: bincode::Error) -> Self {
+        SqliteUndoStoreError::SerializeError(err)
+    }
 }
 
 #[cfg(feature = "persistence")]
@@ -58,7 +66,7 @@ impl std::fmt::Display for SqliteUndoStoreError {
             SqliteUndoStoreError::NotADirectory(path) => write!(f, "Specified path is not a directory: {:?}.", path),
             SqliteUndoStoreError::CannotLock { path, error } => write!(f, "Cannot lock: {:?}: {:?}.", path, error),
             SqliteUndoStoreError::CannotUnlock { path, error } => write!(f, "Cannot unlock: {:?}: {:?}.", path, error),
-            SqliteUndoStoreError::CannotDeserialize { path, id, ser_err } =>
+            SqliteUndoStoreError::CannotDeserialize { path, seq_no: id, ser_err } =>
                 write!(f, "Cannot deserialize ").and_then(|_| 
                    if let Some(p) = path { write!(f, "{:?}, ", p) } else { Ok(()) }
                 ).and_then(|_|
@@ -66,7 +74,6 @@ impl std::fmt::Display for SqliteUndoStoreError {
                 ),
             SqliteUndoStoreError::OrphanSnapshot(path) => write!(f, "Orphan snapshot {:?}.", path),
             SqliteUndoStoreError::DbError(path, db_err) => write!(f, "Database error {:?}: {:?}", path, db_err),
-            SqliteUndoStoreError::CmdSeqNoInconsistent => write!(f, "Command sequence number inconsistent."),
             SqliteUndoStoreError::CannotRestoreModel { snapshot_id, not_foud_cmd_id } => {
                 write!(f, "Cannot restore model. ").and_then(|_| 
                     if let Some(snapshot_id) = snapshot_id {
@@ -78,6 +85,8 @@ impl std::fmt::Display for SqliteUndoStoreError {
                     write!(f, "Command id {} not found.", not_foud_cmd_id)
                 )
             },
+            SqliteUndoStoreError::NotOpend => write!(f, "Not opend."),
+            SqliteUndoStoreError::CmdSequenceError => write!(f, "Command sequence error."),
         }
     }
 }

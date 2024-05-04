@@ -3,6 +3,11 @@ pub trait Cmd {
 
     fn undo(&self, model: &mut Self::Model);
     fn redo(&self, model: &mut Self::Model);
+
+    // If two commands can be merged, merge them and return the merged command.
+    fn merge<T: Cmd>(&self, _other: &T) -> Option<T> {
+        None
+    }
 }
 
 #[cfg(feature = "persistence")]
@@ -11,7 +16,7 @@ pub trait SerializableCmd: Cmd + serde::Serialize + serde::de::DeserializeOwned 
 
 #[cfg(test)]
 mod tests {
-    use super::{Cmd};
+    use super::Cmd;
 
     enum SumCmd {
         Add(i32), Sub(i32),
@@ -27,7 +32,7 @@ mod tests {
                 SumCmd::Add(i) => model.0 -= *i,
                 SumCmd::Sub(i) => model.0 += *i,
             }
-    }
+        }
 
         fn redo(&self, model: &mut Self::Model) {
             match self {

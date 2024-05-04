@@ -1,6 +1,15 @@
 use std::{io, env, borrow::Cow};
+use clap::Parser;
 use serdo::{cmd::{Cmd, SerializableCmd}, undo_store::{Options, SqliteUndoStore, UndoStore}};
 use error_stack::{Result, report, Context};
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Specify the milli-seconds to buffer commands.
+    #[arg(short, long)]
+    flash_period: Option<usize>,
+}
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
 enum EditorCmd {
@@ -131,7 +140,7 @@ impl App {
                     let UndoStoreErr::InvalidIndex { max_index } = err.downcast_ref::<UndoStoreErr>().unwrap();
                     Resp::Msg(format!("Invalid index max: {}", max_index))
                 },
-                Ok(()) => Resp::Cont,
+                Ok(_) => Resp::Cont,
             }
         } else if cmd == "u" {
             if self.store.can_undo() {
