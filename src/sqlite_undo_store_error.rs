@@ -40,6 +40,7 @@ pub enum SqliteUndoStoreError {
     OrphanSnapshot(PathBuf),
     DbError(std::path::PathBuf, Report<rusqlite::Error>),
     NotOpend,
+    AlreadyOpened,
     CmdSequenceError,
 }
 
@@ -87,6 +88,7 @@ impl std::fmt::Display for SqliteUndoStoreError {
             },
             SqliteUndoStoreError::NotOpend => write!(f, "Not opend."),
             SqliteUndoStoreError::CmdSequenceError => write!(f, "Command sequence error."),
+            SqliteUndoStoreError::AlreadyOpened => write!(f, "Alread opened"),
         }
     }
 }
