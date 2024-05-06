@@ -1217,9 +1217,18 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
         Ok(())
     }
 
-    fn saved(&mut self) -> Result<bool, SqliteUndoStoreError> {
+    pub fn saved(&mut self) -> Result<bool, SqliteUndoStoreError> {
         self.persister_client.process_resp()?;
         Ok(self.persister_client.saved())
+    }
+
+    pub fn wait_until_saved(&mut self) {
+        loop {
+            if self.saved().unwrap() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
     }
 
     fn _undo(&mut self) -> Result<(), SqliteUndoStoreError> {
