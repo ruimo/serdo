@@ -1,6 +1,17 @@
 name: Release
 
-on: [ workflow_dispatch ]
+on:
+  workflow_dispatch:
+    inputs:
+      version_level:
+        description: 'Version bump level'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: 'patch'
 
 jobs:
   release:
@@ -24,4 +35,4 @@ jobs:
         git config --global user.name "Shisei Hanai"
         cargo login ${{ secrets.SERDO }}
         git status
-        cargo release -vv --execute release --no-confirm --features persistence
+        cargo release -vv --execute ${{ github.event.inputs.version_level }} --no-confirm --features persistence
