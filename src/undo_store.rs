@@ -1030,7 +1030,7 @@ impl<C, M, E> PersisterServer<C, M, E>
             )"
         )?;
         
-        Ok(stmt.execute(rusqlite::params![undo_limit])?)
+        Ok(stmt.execute(rusqlite::params![undo_limit as i64])?)
     }
 
     fn get_last_snapshot_id(conn: &Connection, sqlite_path: &PathBuf) -> Result<Option<i64>, SqliteUndoStoreError> {
