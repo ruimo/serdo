@@ -132,7 +132,6 @@ impl<C, M, E> UndoStore for InMemoryUndoStore<C, M, E>
 }
 
 #[cfg(feature = "persistence")]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug)]
 enum PersistCmd {
     Open { dir: std::path::PathBuf },
@@ -143,13 +142,13 @@ enum PersistCmd {
 }
 
 #[cfg(feature = "persistence")]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug)]
 enum PersistResp {
     OpenOk { serialized_model: Vec<u8>, seq_no: i64, min_max_seq_no: Option<(i64, i64)> },
     OpenErr(Report<SqliteUndoStoreError>),
 
     CloseOk,
+    #[allow(dead_code)]
     CloseErr(Report<SqliteUndoStoreError>),
 
     AddCmdOk { seq_no: i64 },
@@ -163,7 +162,6 @@ enum PersistResp {
 }
 
 #[cfg(feature = "persistence")]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 enum PersisterServerState<M>
     where M: Default + serde::Serialize + serde::de::DeserializeOwned
 {
@@ -178,7 +176,6 @@ enum PersisterServerState<M>
 }
 
 #[cfg(feature = "persistence")]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 struct PersisterServer<C, M, E>
   where C: crate::cmd::SerializableCmd<Model = M>, M: Default + serde::Serialize + serde::de::DeserializeOwned
 {
@@ -191,15 +188,6 @@ struct PersisterServer<C, M, E>
 }
 
 #[cfg(feature = "persistence")]
-enum OpenStatus {
-    Idle,
-    Opening(PathBuf),
-    Ok(PathBuf),
-    Err(PathBuf, SqliteUndoStoreError),
-}
-
-#[cfg(feature = "persistence")]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 struct PersisterClient {
     receiver: Receiver<PersistResp>,
     sender: Sender<PersistCmd>,
@@ -438,7 +426,6 @@ impl PersisterClient {
 }
 
 #[cfg(feature = "persistence")]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 impl Drop for PersisterClient {
     fn drop(&mut self) {
         self.sender.send(PersistCmd::Close).unwrap();
@@ -485,7 +472,6 @@ macro_rules! send {
 
 
 #[cfg(feature = "persistence")]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 impl<C, M, E> PersisterServer<C, M, E>
     where C: crate::cmd::SerializableCmd<Model = M>, M: Default + serde::Serialize + serde::de::DeserializeOwned
 {
@@ -493,7 +479,7 @@ impl<C, M, E> PersisterServer<C, M, E>
         receiver: Receiver<PersistCmd>,
         sender: Sender<PersistResp>,
         undo_limit: usize,
-        merge_timeout: Option<Duration>,
+        _merge_timeout: Option<Duration>,
     ) -> Self {
         Self {
             undo_limit,
@@ -510,7 +496,7 @@ impl<C, M, E> PersisterServer<C, M, E>
                 Ok(cmd) => {
                     match cmd {
                         PersistCmd::Open { dir } => {
-                            if let PersisterServerState::Loaded { base_dir, sqlite_path: _, cur_cmd_seq_no: _, model: _, conn: _ } = &self.state {
+                            if let PersisterServerState::Loaded { base_dir: _, sqlite_path: _, cur_cmd_seq_no: _, model: _, conn: _ } = &self.state {
                                 tracing::error!("Already opend.");
                                 send!(self.sender, PersistResp::OpenErr(SqliteUndoStoreError::AlreadyOpened.into_report()));
                             }
@@ -1072,14 +1058,12 @@ impl<C, M, E> PersisterServer<C, M, E>
 }
 
 #[cfg(feature = "persistence")]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 struct Db<'a> {
     sqlite_path: PathBuf,
     conn: &'a Connection,
 }
 
 #[cfg(feature = "persistence")]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 impl<'a> Db<'a> {
     fn new(sqlite_path: PathBuf, conn: &'a Connection) -> Self {
         Self { sqlite_path, conn }
@@ -1095,13 +1079,13 @@ impl<'a> Db<'a> {
 }
 
 #[cfg(feature = "persistence")]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct SqliteUndoStore<C, M, E>
   where C: crate::cmd::SerializableCmd<Model = M>, M: Default + serde::Serialize + serde::de::DeserializeOwned
 {
     phantom: std::marker::PhantomData<C>,
     phantome: std::marker::PhantomData<E>,
     model: M,
+    #[allow(dead_code)]
     options: Options<M>,
     persister_client: PersisterClient,
     base_dir: std::path::PathBuf,
@@ -1150,7 +1134,6 @@ impl<M> Options<M> {
 }
 
 #[cfg(feature = "persistence")]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Model = M>, M: Default + serde::Serialize + serde::de::DeserializeOwned {
     pub fn dir(&self) -> &std::path::PathBuf {
         &self.base_dir
@@ -1299,7 +1282,6 @@ pub const MAX_COMMAND_ID: i64 = 9_223_372_036_854_775_807;
 // }
 
 #[cfg(feature = "persistence")]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 impl<C, M, E> UndoStore for SqliteUndoStore<C, M, E>
   where M: Default + serde::Serialize + serde::de::DeserializeOwned + 'static, C: crate::cmd::SerializableCmd<Model = M>
 {
