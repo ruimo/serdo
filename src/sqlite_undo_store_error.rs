@@ -1,7 +1,7 @@
 cfg_if::cfg_if! {
     if #[cfg(feature = "persistence")] {
         use std::{path::PathBuf};
-        use error_stack::{Report, Context};
+        use error_stack::Report;
     }
 }
 
@@ -94,4 +94,4 @@ impl std::fmt::Display for SqliteUndoStoreError {
 }
 
 #[cfg(feature = "persistence")]
-impl Context for SqliteUndoStoreError {}
+impl std::error::Error for SqliteUndoStoreError {}

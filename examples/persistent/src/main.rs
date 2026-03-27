@@ -1,7 +1,6 @@
 use std::{io, env, borrow::Cow};
 use clap::Parser;
 use serdo::{cmd::{Cmd, SerializableCmd}, undo_store::{Options, SqliteUndoStore, UndoStore}};
-use error_stack::{Result, report, Context};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -63,7 +62,7 @@ impl std::fmt::Display for UndoStoreErr {
     }
 }
 
-impl Context for UndoStoreErr {}
+impl std::error::Error for UndoStoreErr {}
 
 trait Model: UndoStore {
     fn append(&mut self, txt: String);
@@ -80,7 +79,7 @@ impl Model for SqliteUndoStore<EditorCmd, Buffer, UndoStoreErr> {
             Box::new(move |buf| {
                 let len = buf.0.len();
                 if len <= loc {
-                    Err(report!(UndoStoreErr::InvalidIndex { max_index: len - 1 }))
+                    Err(UndoStoreErr::InvalidIndex { max_index: len - 1 })
                 } else {
                     let deleted = buf.0.remove(loc);
                     Ok(EditorCmd::DeleteAt { loc, deleted })
@@ -136,8 +135,7 @@ impl App {
         } else if cmd.starts_with("-") {
             let loc: usize = cmd[1..].trim().parse().unwrap();
             match self.store.delete_at(loc) {
-                Err(err) => {
-                    let UndoStoreErr::InvalidIndex { max_index } = err.downcast_ref::<UndoStoreErr>().unwrap();
+                Err(UndoStoreErr::InvalidIndex { max_index }) => {
                     Resp::Msg(format!("Invalid index max: {}", max_index))
                 },
                 Ok(_) => Resp::Cont,

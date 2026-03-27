@@ -4,15 +4,13 @@ use crate::cmd::Cmd;
 cfg_if::cfg_if! {
     if #[cfg(feature = "persistence")] {
         use std::path::PathBuf;
-        use error_stack::Report;
+        use error_stack::{Report, IntoReport};
         use crate::sqlite_undo_store_error::SqliteUndoStoreError;
         use std::path::{Path};
-        use error_stack::{Result, report};
         use rusqlite::Connection;
         use std::sync::mpsc::Receiver;
         use std::sync::mpsc;
         use std::{sync::mpsc::Sender, thread};
-        use error_stack::bail;
     }
 }
 
@@ -215,7 +213,7 @@ struct PersisterClient {
 #[cfg(feature = "persistence")]
 impl PersisterClient {
     fn open(receiver: Receiver<PersistResp>, sender: Sender<PersistCmd>, dir: PathBuf, undo_limit: usize)
-       -> Result<(Self, Vec<u8>), SqliteUndoStoreError> 
+       -> Result<(Self, Vec<u8>), Report<SqliteUndoStoreError>> 
     {
         sender.send(PersistCmd::Open { dir }).unwrap();
         let msg = receiver.recv().unwrap();
@@ -224,31 +222,31 @@ impl PersisterClient {
                 (serialized_model, seq_no, min_max_seq_no),
             PersistResp::OpenErr(report) => return Err(report),
             PersistResp::CloseOk => {
-                return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
             },
             PersistResp::CloseErr(report) => {
                 println!("Unexpected close error {:?}", report);
-                return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
             }
             PersistResp::AddCmdOk { seq_no: _ } => {
-                return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
             }
             PersistResp::AddCmdErr(err) => {
                 return Err(err);
             }
             PersistResp::UndoOk { seq_no: _, serialized_command: _ } => {
-                return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
             }
             PersistResp::UndoErr(report) => {
                 println!("Unexpected undo error {:?}", report);
-                return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
             }
             PersistResp::RedoOk { seq_no: _, serialized_command: _ } => {
-                return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
             }
             PersistResp::RedoErr(report) => {
                 println!("Unexpected redo error {:?}", report);
-                return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
             }
         };
         let (min_seq_no, max_seq_no) = if let Some((min, max)) = min_max_seq_no {
@@ -258,14 +256,14 @@ impl PersisterClient {
         Ok((Self { receiver, sender, last_seq_no: seq_no, min_seq_no, max_seq_no, last_processed_seq_no: None, undo_limit }, serialized_model))
     }
 
-    fn undo(&mut self) -> Result<(i64, Vec<u8>), SqliteUndoStoreError> {
+    fn undo(&mut self) -> Result<(i64, Vec<u8>), Report<SqliteUndoStoreError>> {
         self.post_cmd(PersistCmd::Undo);
         let resp = self.wait_undo_resp();
         if let Ok(r) = &resp {
             let seq_no = r.0;
             if seq_no != self.last_seq_no {
                 println!("Unexpected sequence number: {} != {}", seq_no, self.last_seq_no);
-                bail!(SqliteUndoStoreError::CmdSequenceError);
+                error_stack::bail!(SqliteUndoStoreError::CmdSequenceError);
             }
         }
 
@@ -273,14 +271,14 @@ impl PersisterClient {
         resp
     }
 
-    fn redo(&mut self) -> Result<(i64, Vec<u8>), SqliteUndoStoreError> {
+    fn redo(&mut self) -> Result<(i64, Vec<u8>), Report<SqliteUndoStoreError>> {
         self.post_cmd(PersistCmd::Redo);
         let resp = self.wait_redo_resp();
 
         if let Ok((seq_no, _)) = &resp {
             if *seq_no != self.last_seq_no {
                 println!("Unexpected sequence number: {} != {}", seq_no, self.last_seq_no);
-                bail!(SqliteUndoStoreError::CmdSequenceError);
+                error_stack::bail!(SqliteUndoStoreError::CmdSequenceError);
             }
         }
 
@@ -305,20 +303,20 @@ impl PersisterClient {
         }
     }
 
-    fn process_resp(&mut self) -> Result<(), SqliteUndoStoreError> {
+    fn process_resp(&mut self) -> Result<(), Report<SqliteUndoStoreError>> {
         loop {
             match self.receiver.recv_timeout(Duration::ZERO) {
                 Ok(resp) => match resp {
                     PersistResp::OpenOk { serialized_model: _, seq_no: _, min_max_seq_no: _ } =>
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError)),
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report()),
                     PersistResp::OpenErr(err) => {
                         println!("Open error {:?}", err);
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
                     }
-                    PersistResp::CloseOk => return Err(report!(SqliteUndoStoreError::CmdSequenceError)),
+                    PersistResp::CloseOk => return Err(SqliteUndoStoreError::CmdSequenceError.into_report()),
                     PersistResp::CloseErr(err) => {
                         println!("Close error {:?}", err);
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
                     }
                     PersistResp::AddCmdOk { seq_no } => {
                         self.last_processed_seq_no = Some(seq_no);
@@ -328,16 +326,16 @@ impl PersisterClient {
                         return Err(err);
                     }
                     PersistResp::UndoOk { seq_no: _, serialized_command: _ } =>
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError)),
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report()),
                     PersistResp::UndoErr(err) => {
                         println!("Undo error {:?}", err);
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
                     }
                     PersistResp::RedoOk { seq_no: _, serialized_command: _ } =>
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError)),
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report()),
                     PersistResp::RedoErr(err) => {
                         println!("Redo error {:?}", err);
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
                     }
                 }
                 Err(_) => break,
@@ -346,20 +344,20 @@ impl PersisterClient {
         Ok(())
     }
 
-    fn wait_undo_resp(&mut self) -> Result<(i64, Vec<u8>), SqliteUndoStoreError> {
+    fn wait_undo_resp(&mut self) -> Result<(i64, Vec<u8>), Report<SqliteUndoStoreError>> {
         loop {
             match self.receiver.recv() {
                 Ok(resp) => match resp {
                     PersistResp::OpenOk { serialized_model: _, seq_no: _, min_max_seq_no: _ } =>
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError)),
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report()),
                     PersistResp::OpenErr(err) => {
                         println!("Open error {:?}", err);
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
                     }
-                    PersistResp::CloseOk => return Err(report!(SqliteUndoStoreError::CmdSequenceError)),
+                    PersistResp::CloseOk => return Err(SqliteUndoStoreError::CmdSequenceError.into_report()),
                     PersistResp::CloseErr(err) => {
                         println!("Close error {:?}", err);
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
                     }
                     PersistResp::AddCmdOk { seq_no } => {
                         self.last_processed_seq_no = Some(seq_no);
@@ -370,10 +368,10 @@ impl PersisterClient {
                     PersistResp::UndoOk { seq_no, serialized_command } => return Ok((seq_no, serialized_command)),
                     PersistResp::UndoErr(err) => return Err(err),
                     PersistResp::RedoOk { seq_no: _, serialized_command: _ } =>
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError)),
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report()),
                     PersistResp::RedoErr(err) => {
                         println!("Redo error {:?}", err);
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
                     }
                 }
                 Err(err) => {
@@ -383,20 +381,20 @@ impl PersisterClient {
         }
     }
 
-    fn wait_redo_resp(&mut self) -> Result<(i64, Vec<u8>), SqliteUndoStoreError> {
+    fn wait_redo_resp(&mut self) -> Result<(i64, Vec<u8>), Report<SqliteUndoStoreError>> {
         loop {
             match self.receiver.recv() {
                 Ok(resp) => match resp {
                     PersistResp::OpenOk { serialized_model: _, seq_no: _, min_max_seq_no: _ } =>
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError)),
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report()),
                     PersistResp::OpenErr(err) => {
                         println!("Open error {:?}", err);
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
                     }
-                    PersistResp::CloseOk => return Err(report!(SqliteUndoStoreError::CmdSequenceError)),
+                    PersistResp::CloseOk => return Err(SqliteUndoStoreError::CmdSequenceError.into_report()),
                     PersistResp::CloseErr(err) => {
                         println!("Close error {:?}", err);
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
                     }
                     PersistResp::AddCmdOk { seq_no } => {
                         self.last_processed_seq_no = Some(seq_no);
@@ -405,10 +403,10 @@ impl PersisterClient {
                         return Err(err);
                     }
                     PersistResp::UndoOk { seq_no: _, serialized_command: _ } => 
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError)),
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report()),
                     PersistResp::UndoErr(err) => {
                         println!("Undo error {:?}", err);
-                        return Err(report!(SqliteUndoStoreError::CmdSequenceError));
+                        return Err(SqliteUndoStoreError::CmdSequenceError.into_report());
                     }
                     PersistResp::RedoOk { seq_no, serialized_command } => return Ok((seq_no, serialized_command)),
                     PersistResp::RedoErr(err) => return Err(err),
@@ -477,10 +475,11 @@ impl Drop for PersisterClient {
     }
 }
 
+#[cfg(feature = "persistence")]
 macro_rules! send {
     ($sender:expr, $msg:expr) => {
         tracing::trace!("Persister server response: {:?}", $msg);
-        $sender.send($msg).unwrap();    
+        $sender.send($msg).unwrap();
     };
 }
 
@@ -513,7 +512,7 @@ impl<C, M, E> PersisterServer<C, M, E>
                         PersistCmd::Open { dir } => {
                             if let PersisterServerState::Loaded { base_dir, sqlite_path: _, cur_cmd_seq_no: _, model: _, conn: _ } = &self.state {
                                 tracing::error!("Already opend.");
-                                send!(self.sender, PersistResp::OpenErr(report!(SqliteUndoStoreError::AlreadyOpened)));
+                                send!(self.sender, PersistResp::OpenErr(SqliteUndoStoreError::AlreadyOpened.into_report()));
                             }
 
                             let mut sqlite_path = dir.clone();
@@ -539,7 +538,7 @@ impl<C, M, E> PersisterServer<C, M, E>
                                                         }
                                                         Err(err) => {
                                                             tracing::error!("Cannot retrieve min/max seq {:?}", err);
-                                                            let msg = PersistResp::OpenErr(report!(err));
+                                                            let msg = PersistResp::OpenErr(err.into_report());
                                                             send!(self.sender, msg);
                                                         }
                                                     };
@@ -547,11 +546,9 @@ impl<C, M, E> PersisterServer<C, M, E>
                                                 Err(err) => {
                                                     tracing::error!("Cannot serialize model: {:?}", err);
                                                     let msg = PersistResp::OpenErr(
-                                                        report!(
-                                                            SqliteUndoStoreError::CannotDeserialize {
-                                                                path: Some(sqlite_path.clone()), seq_no: cur_cmd_seq_no, ser_err: err
-                                                            }
-                                                        )
+                                                        SqliteUndoStoreError::CannotDeserialize {
+                                                            path: Some(sqlite_path.clone()), seq_no: cur_cmd_seq_no, ser_err: err
+                                                        }.into_report()
                                                     );
                                                     send!(self.sender, msg);
                                                 }
@@ -641,7 +638,7 @@ impl<C, M, E> PersisterServer<C, M, E>
         }
     }
 
-    fn min_max_seq_no(db: &Db) -> Result<Option<(i64, i64)>, SqliteUndoStoreError> {
+    fn min_max_seq_no(db: &Db) -> Result<Option<(i64, i64)>, Report<SqliteUndoStoreError>> {
         db.exec(|conn| {
             let mut stmt = conn.prepare(
                 "select count(command_id), min(command_id), max(command_id) from command"
@@ -661,11 +658,11 @@ impl<C, M, E> PersisterServer<C, M, E>
         })
     }
 
-    fn undo(&mut self) -> Result<(i64, Vec<u8>), SqliteUndoStoreError> {
+    fn undo(&mut self) -> Result<(i64, Vec<u8>), Report<SqliteUndoStoreError>> {
         match &mut self.state {
             PersisterServerState::Idle => {
-                send!(self.sender, PersistResp::UndoErr(report!(SqliteUndoStoreError::NotOpend)));
-                Err(report!(SqliteUndoStoreError::NotOpend))
+                send!(self.sender, PersistResp::UndoErr(SqliteUndoStoreError::NotOpend.into_report()));
+                Err(SqliteUndoStoreError::NotOpend.into_report())
             }
             PersisterServerState::Loaded { base_dir: _, sqlite_path, cur_cmd_seq_no, model, conn } => {
                 let db = Db::new(sqlite_path.clone(), conn);
@@ -694,17 +691,17 @@ impl<C, M, E> PersisterServer<C, M, E>
                     Self::save_seq_no(sqlite_path, conn, *cur_cmd_seq_no)?;
                     Ok((*cur_cmd_seq_no + 1, ser_cmd))
                 } else {
-                    bail!(SqliteUndoStoreError::CannotUndoRedo);
+                    error_stack::bail!(SqliteUndoStoreError::CannotUndoRedo);
                 }
             }
         }
     }
 
-    fn redo(&mut self) -> Result<(i64, Vec<u8>), SqliteUndoStoreError> {
+    fn redo(&mut self) -> Result<(i64, Vec<u8>), Report<SqliteUndoStoreError>> {
         match &mut self.state {
             PersisterServerState::Idle => {
-                send!(self.sender, PersistResp::RedoErr(report!(SqliteUndoStoreError::NotOpend)));
-                Err(report!(SqliteUndoStoreError::NotOpend))
+                send!(self.sender, PersistResp::RedoErr(SqliteUndoStoreError::NotOpend.into_report()));
+                Err(SqliteUndoStoreError::NotOpend.into_report())
             }
             PersisterServerState::Loaded { base_dir: _, sqlite_path, cur_cmd_seq_no, model, conn } => {
                 let db = Db::new(sqlite_path.clone(), conn);
@@ -733,17 +730,17 @@ impl<C, M, E> PersisterServer<C, M, E>
                     Self::save_seq_no(sqlite_path, conn, *cur_cmd_seq_no)?;
                     Ok((*cur_cmd_seq_no - 1, ser_cmd))
                 } else {
-                    bail!(SqliteUndoStoreError::CannotUndoRedo);
+                    error_stack::bail!(SqliteUndoStoreError::CannotUndoRedo);
                 }
             }
         }
     }
 
-    fn add_cmd(&mut self, seq_no: i64, ser_cmd: Vec<u8>) -> Result<(), SqliteUndoStoreError>{
+    fn add_cmd(&mut self, seq_no: i64, ser_cmd: Vec<u8>) -> Result<(), Report<SqliteUndoStoreError>>{
         match &mut self.state {
             PersisterServerState::Idle => {
-                send!(self.sender, PersistResp::AddCmdErr(report!(SqliteUndoStoreError::NotOpend)));
-                Err(report!(SqliteUndoStoreError::NotOpend))
+                send!(self.sender, PersistResp::AddCmdErr(SqliteUndoStoreError::NotOpend.into_report()));
+                Err(SqliteUndoStoreError::NotOpend.into_report())
             }
             PersisterServerState::Loaded { base_dir: _, sqlite_path, cur_cmd_seq_no: _, model, conn } => {
                 let cmd: C = bincode::deserialize(&ser_cmd).map_err(|ser_err|
@@ -766,7 +763,7 @@ impl<C, M, E> PersisterServer<C, M, E>
 
                 if seq_no == MAX_COMMAND_ID {
                     tracing::error!("add_cmd() seq no reaced MAX_COMMAND_ID:{}", seq_no);
-                    send!(self.sender, PersistResp::AddCmdErr(report!(SqliteUndoStoreError::NeedCompaction(sqlite_path.clone()))));
+                    send!(self.sender, PersistResp::AddCmdErr(SqliteUndoStoreError::NeedCompaction(sqlite_path.clone()).into_report()));
                 }
                 Self::save_seq_no(sqlite_path, conn, seq_no)?;
                 let removed_count = db.exec(|conn| Self::trim_undo_records(conn, self.undo_limit))?;
@@ -806,10 +803,10 @@ impl<C, M, E> PersisterServer<C, M, E>
         path
     }
 
-    fn try_lock(base_dir: &std::path::Path) -> Result<std::fs::File, SqliteUndoStoreError> {
+    fn try_lock(base_dir: &std::path::Path) -> Result<std::fs::File, Report<SqliteUndoStoreError>> {
         let lock_file_path = Self::lock_file_path(base_dir);
         std::fs::OpenOptions::new().write(true).create_new(true).open(&lock_file_path).map_err(|error|
-            report!(SqliteUndoStoreError::CannotLock { path: lock_file_path, error })
+            SqliteUndoStoreError::CannotLock { path: lock_file_path, error }.into_report()
         )
     }
 
@@ -842,7 +839,7 @@ impl<C, M, E> PersisterServer<C, M, E>
         Ok(())
     }
 
-    fn open_sqlite<P: AsRef<Path>>(dir: P, sqlite_path: PathBuf) -> Result<Connection, SqliteUndoStoreError> {
+    fn open_sqlite<P: AsRef<Path>>(dir: P, sqlite_path: PathBuf) -> Result<Connection, Report<SqliteUndoStoreError>> {
         let conn = if sqlite_path.exists() {
             if ! dir.as_ref().is_dir() {
                 return Err(SqliteUndoStoreError::NotADirectory(dir.as_ref().to_owned())).map_err(Report::from)
@@ -854,7 +851,7 @@ impl<C, M, E> PersisterServer<C, M, E>
             Self::try_lock(dir.as_ref())?;
             Self::create_new(&sqlite_path)
         }.map_err(|e|
-            SqliteUndoStoreError::DbError(sqlite_path, report!(e))
+            SqliteUndoStoreError::DbError(sqlite_path, e.into_report())
         )?;
         Ok(conn)        
     }
@@ -863,17 +860,17 @@ impl<C, M, E> PersisterServer<C, M, E>
         let mut stmt = conn.prepare(
             "select count(cur_cmd_seq_no), max(cur_cmd_seq_no) from cmd_seq_no"
         )?;
-        let mut rows = stmt.query([]).map_err(Report::from)?;
+        let mut rows = stmt.query([])?;
                 
-        let row = rows.next().map_err(Report::from)?.unwrap();
-        let count: i64 = row.get(0).map_err(Report::from)?;
+        let row = rows.next()?.unwrap();
+        let count: i64 = row.get(0)?;
         if 1 < count {
             panic!("Command sequence number inconsistent. The record count({}) should be 0 or 1.", count);
         } else {
-            let cur_seq: Option<i64> = row.get(1).map_err(Report::from)?;
+            let cur_seq: Option<i64> = row.get(1)?;
             match cur_seq {
                 None => {
-                    conn.execute("insert into cmd_seq_no (cur_cmd_seq_no) values (0)", rusqlite::params![]).map_err(Report::from)?;
+                    conn.execute("insert into cmd_seq_no (cur_cmd_seq_no) values (0)", rusqlite::params![])?;
                     Ok(0)
                 },
                 Some(seq) => Ok(seq)
@@ -881,8 +878,8 @@ impl<C, M, E> PersisterServer<C, M, E>
         }
     }
 
-    fn restore_model(sqlite_path: &PathBuf, conn: &Connection) -> Result<(i64, M), SqliteUndoStoreError> {
-        let cur_seq_no = Self::get_cur_seq_no(conn).map_err(|e| SqliteUndoStoreError::DbError(sqlite_path.clone(), e))?;
+    fn restore_model(sqlite_path: &PathBuf, conn: &Connection) -> Result<(i64, M), Report<SqliteUndoStoreError>> {
+        let cur_seq_no = Self::get_cur_seq_no(conn).map_err(|e| SqliteUndoStoreError::DbError(sqlite_path.clone(), e.into_report()))?;
         if cur_seq_no == 0 {
             return Ok((0, M::default()))
         }
@@ -910,9 +907,9 @@ impl<C, M, E> PersisterServer<C, M, E>
                         let id: i64 = Self::db(sqlite_path, || row.get(0))?;
                         tracing::trace!("loading snapshot. cmd id: {}.", id);
                         if id != cmd_id {
-                            return Err(report!(SqliteUndoStoreError::CannotRestoreModel {
-                                snapshot_id: Some(last_snapshot_id), not_foud_cmd_id: cmd_id 
-                            }))
+                            return Err(SqliteUndoStoreError::CannotRestoreModel {
+                                snapshot_id: Some(last_snapshot_id), not_foud_cmd_id: cmd_id
+                            }.into_report())
                         }
                         cmd_id -= 1;
                                 
@@ -939,9 +936,9 @@ impl<C, M, E> PersisterServer<C, M, E>
                         )?;
                         tracing::trace!("loading snapshot. cmd id: {}.", id);
                         if id != cmd_id {
-                            return Err(report!(SqliteUndoStoreError::CannotRestoreModel {
+                            return Err(SqliteUndoStoreError::CannotRestoreModel {
                                 snapshot_id: Some(last_snapshot_id), not_foud_cmd_id: cmd_id
-                            }))
+                            }.into_report())
                         }
                         cmd_id += 1;
                         
@@ -962,7 +959,7 @@ impl<C, M, E> PersisterServer<C, M, E>
         }
     }
 
-    fn load_last_snapshot(sqlite_path: &PathBuf, conn: &Connection) -> Result<Option<(i64, M)>, SqliteUndoStoreError> {
+    fn load_last_snapshot(sqlite_path: &PathBuf, conn: &Connection) -> Result<Option<(i64, M)>, Report<SqliteUndoStoreError>> {
         let mut stmt = Self::db(
             sqlite_path,
             || conn.prepare(
@@ -987,7 +984,7 @@ impl<C, M, E> PersisterServer<C, M, E>
         }
     }
 
-    fn load_without_snapshot(sqlite_path: &PathBuf, conn: &Connection, cur_seq_no: i64) -> Result<M, SqliteUndoStoreError> {
+    fn load_without_snapshot(sqlite_path: &PathBuf, conn: &Connection, cur_seq_no: i64) -> Result<M, Report<SqliteUndoStoreError>> {
         let mut stmt = Self::db(
             sqlite_path,
             || conn.prepare(
@@ -1001,7 +998,7 @@ impl<C, M, E> PersisterServer<C, M, E>
         while let Some(row) = Self::db(sqlite_path, || rows.next())? {
             let id: i64 = Self::db(sqlite_path, || row.get(0))?;
             if id != cmd_id {
-                return Err(report!(SqliteUndoStoreError::CannotRestoreModel { snapshot_id: None, not_foud_cmd_id: cmd_id }))
+                return Err(SqliteUndoStoreError::CannotRestoreModel { snapshot_id: None, not_foud_cmd_id: cmd_id }.into_report())
             }
             cmd_id += 1;
             
@@ -1014,7 +1011,7 @@ impl<C, M, E> PersisterServer<C, M, E>
         Ok(model)
     }
 
-    fn save_seq_no(sqlite_path: &PathBuf, conn: &Connection, seq_no: i64) -> Result<(), SqliteUndoStoreError> {
+    fn save_seq_no(sqlite_path: &PathBuf, conn: &Connection, seq_no: i64) -> Result<(), Report<SqliteUndoStoreError>> {
         Self::db(
             &sqlite_path,
             || conn.execute("update cmd_seq_no set cur_cmd_seq_no = ?1", rusqlite::params![seq_no])
@@ -1033,7 +1030,7 @@ impl<C, M, E> PersisterServer<C, M, E>
         Ok(stmt.execute(rusqlite::params![undo_limit as i64])?)
     }
 
-    fn get_last_snapshot_id(conn: &Connection, sqlite_path: &PathBuf) -> Result<Option<i64>, SqliteUndoStoreError> {
+    fn get_last_snapshot_id(conn: &Connection, sqlite_path: &PathBuf) -> Result<Option<i64>, Report<SqliteUndoStoreError>> {
         let mut stmt = Self::db(
             &sqlite_path,
             || conn.prepare(
@@ -1054,7 +1051,7 @@ impl<C, M, E> PersisterServer<C, M, E>
         Ok(stmt.execute(rusqlite::params![])?)
     }
 
-    fn save_snapshot(db: &Db, ser_model: &Vec<u8>, seq_no: i64) -> Result<(), SqliteUndoStoreError> {
+    fn save_snapshot(db: &Db, ser_model: &Vec<u8>, seq_no: i64) -> Result<(), Report<SqliteUndoStoreError>> {
         db.exec(|conn| {
             let mut stmt = conn.prepare(
                 "insert into snapshot (snapshot_id, serialized) values (?1, ?2)"
@@ -1067,9 +1064,9 @@ impl<C, M, E> PersisterServer<C, M, E>
     }
 
     #[inline]
-    fn db<F, T>(sqlite_path: &PathBuf, f: F) -> Result<T, SqliteUndoStoreError> where F: FnOnce() -> std::result::Result<T, rusqlite::Error> {
+    fn db<F, T>(sqlite_path: &PathBuf, f: F) -> Result<T, Report<SqliteUndoStoreError>> where F: FnOnce() -> std::result::Result<T, rusqlite::Error> {
         f().map_err(|e| {
-            report!(SqliteUndoStoreError::DbError(sqlite_path.clone(), report!(e)))
+            SqliteUndoStoreError::DbError(sqlite_path.clone(), e.into_report()).into_report()
         })
     }
 }
@@ -1089,10 +1086,10 @@ impl<'a> Db<'a> {
     }
 
     #[inline]
-    fn exec<F, T>(&self, f: F) -> Result<T, SqliteUndoStoreError> where F: FnOnce(&Connection) -> std::result::Result<T, rusqlite::Error> {
+    fn exec<F, T>(&self, f: F) -> Result<T, Report<SqliteUndoStoreError>> where F: FnOnce(&Connection) -> std::result::Result<T, rusqlite::Error> {
         let sqlite_path = self.sqlite_path.clone();
         f(self.conn).map_err(|e| {
-            report!(SqliteUndoStoreError::DbError(sqlite_path, report!(e)))
+            SqliteUndoStoreError::DbError(sqlite_path, e.into_report()).into_report()
         })
     }
 }
@@ -1160,7 +1157,7 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
     }
 
     // Open the specified directory or newly create it if that does not exist.
-    pub fn open<P: AsRef<Path>>(dir: P, mut options: Options<M>) -> Result<Self, SqliteUndoStoreError>
+    pub fn open<P: AsRef<Path>>(dir: P, mut options: Options<M>) -> Result<Self, Report<SqliteUndoStoreError>>
         where C: crate::cmd::SerializableCmd<Model = M> + serde::de::DeserializeOwned
     {
         let (cmd_sender, cmd_receiver) = mpsc::channel();
@@ -1197,7 +1194,7 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
         Ok(store)
     }
 
-    pub fn save_as<P: AsRef<Path>>(&mut self, save_to: P) -> Result<(), SqliteUndoStoreError> {
+    pub fn save_as<P: AsRef<Path>>(&mut self, save_to: P) -> Result<(), Report<SqliteUndoStoreError>> {
         let mut to = save_to.as_ref().to_path_buf();
         to.push(SQLITE_FILE_NAME);
 
@@ -1208,7 +1205,7 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
         Ok(())
     }
 
-    fn _add_cmd(&mut self, cmd: C) -> Result<(), SqliteUndoStoreError> {
+    fn _add_cmd(&mut self, cmd: C) -> Result<(), Report<SqliteUndoStoreError>> {
         let serialized: Vec<u8> = bincode::serialize(&cmd).map_err(
             |e| SqliteUndoStoreError::SerializeError(e)
         )?;
@@ -1217,7 +1214,7 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
         Ok(())
     }
 
-    pub fn saved(&mut self) -> Result<bool, SqliteUndoStoreError> {
+    pub fn saved(&mut self) -> Result<bool, Report<SqliteUndoStoreError>> {
         self.persister_client.process_resp()?;
         Ok(self.persister_client.saved())
     }
@@ -1231,7 +1228,7 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
         }
     }
 
-    fn _undo(&mut self) -> Result<(), SqliteUndoStoreError> {
+    fn _undo(&mut self) -> Result<(), Report<SqliteUndoStoreError>> {
         let (seq_no, ser_cmd) = self.persister_client.undo()?;
         let cmd: C = bincode::deserialize(&ser_cmd).map_err(|ser_err|
             SqliteUndoStoreError::CannotDeserialize {
@@ -1257,11 +1254,11 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
         //     self.save_seq_no()?;
         //     Ok(res)
         // } else {
-        //     bail!(SqliteUndoStoreError::CannotUndoRedo)
+        //     error_stack::bail!(SqliteUndoStoreError::CannotUndoRedo)
         // }
     }
 
-    fn _redo(&mut self) -> Result<(), SqliteUndoStoreError> {
+    fn _redo(&mut self) -> Result<(), Report<SqliteUndoStoreError>> {
         let (seq_no, ser_cmd) = self.persister_client.redo()?;
         let cmd: C = bincode::deserialize(&ser_cmd).map_err(|ser_err|
             SqliteUndoStoreError::CannotDeserialize {
@@ -1287,7 +1284,7 @@ impl<C, M, E> SqliteUndoStore<C, M, E> where C: crate::cmd::SerializableCmd<Mode
         //     self.save_seq_no()?;
         //     Ok(())
         // } else {
-        //     bail!(SqliteUndoStoreError::CannotUndoRedo)
+        //     error_stack::bail!(SqliteUndoStoreError::CannotUndoRedo)
         // }
 Ok(())
     }
@@ -1508,7 +1505,6 @@ mod tests {
 mod persistent_tests {
     use std::{thread, time::Duration};
 
-    use error_stack::Result;
     use tracing::level_filters::LevelFilter;
     use crate::undo_store::{self, SQLITE_FILE_NAME};
     use super::{Cmd, SqliteUndoStore, UndoStore};
